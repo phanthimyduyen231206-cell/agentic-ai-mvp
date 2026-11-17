@@ -1,0 +1,161 @@
+# Hợp đồng giao tiếp giữa các module (contracts)
+
+Bản nháp D02 – Duyên soạn, hạn chốt **17/11 12:00**. Mỗi chủ module đọc phần của mình và góp ý trong PR `feature/contracts`.
+Sau khi merge, muốn đổi chữ ký hàm phải báo trưởng nhóm **và** những người dùng hàm đó.
+
+Nguồn: bản đặc tả `Dac_ta_chi_tiet_MVP_Agent_Tiem_Banh.docx`, Mục 4–9.
+
+## 0. Quy ước chung
+
+| Nội dung | Quy ước |
+|---|---|
+| Ngày giờ | Giờ Việt Nam, không ghi múi giờ. Trong Python dùng `datetime` / `date`; trong DB và JSON lưu chuỗi ISO `YYYY-MM-DDTHH:MM:SS` (ngày: `YYYY-MM-DD`). Lấy "bây giờ" **chỉ** qua `services.clock`. |
+| Số lượng | `float`, theo đơn vị của nguyên liệu (`ingredients.unit`: kg, lít, quả…). |
+| Tiền | `int`, đơn vị VNĐ. |
+| Mã | `ingredient_id`, `sup_id`, `batch_id`, `order_id` là `str` (vd `ING01`, `SUP_CHINH`, `B001`). `po_id`, `alert_id`, `run_id`, `log_id` là `int` tự tăng. |
+| Người dùng | `user = {"username": str, "role": "MANAGER" \| "STAFF"}`, lấy từ phiên đăng nhập trong `app.py`, **không** lấy từ tham số giao diện gửi lên. |
+| Database | `data/bakery.db`, đổi được bằng biến môi trường `BAKERY_DB`. Mở kết nối qua `repository.get_connection()` (trước khi P03 xong thì dùng `sqlite3.connect(os.getenv("BAKERY_DB", "data/bakery.db"))`). |
+| Lỗi nghiệp vụ | Hàm ghi gặp lỗi thì **raise `GuardrailError(code, message)`** (định nghĩa trong `services/po_service.py`), không ghi gì, và ghi log `GUARDRAIL_BLOCKED`. |
+
+## 1. services/clock.py – Duyên (D03)
+
+```python
+def now() -> datetime        # giờ VN hiện tại, hoặc ngày giả nếu có DEMO_DATE
+def today() -> date          # = now().date()
+```
+`DEMO_DATE` nhận `YYYY-MM-DD` (giờ lấy theo giờ thật) hoặc `YYYY-MM-DDTHH:MM`.
+
+## 2. services/audit_log.py – Duyên (D04)
+
+```python
+EVENT_TYPES: tuple[str, ...]   # danh sách sự kiện Mục 7
+def write_audit_log(actor: str, event_type: str, entity_type: str | None = None,
+                    entity_id: str | int | None = None, run_id: int | None = None,
+                    detail: dict | None = None, conn: sqlite3.Connection | None = None) -> int  # trả log_id
+```
+- `actor`: `"system"`, `"scheduler"`, `"gemini"` hoặc `username`.
+- `event_type` không có trong `EVENT_TYPES` → `ValueError`, không ghi.
+- Truyền `conn` khi đang trong một transaction để log nằm chung transaction.
+
+`EVENT_TYPES`: RUN_STARTED, RUN_SUCCEEDED, RUN_FAILED, RUN_REJECTED_DUPLICATE, ALERT_CREATED, OPTION_SELECTED, ALERT_DISMISSED, PO_CREATED, PO_APPROVED, PO_REJECTED, PO_CANCELLED, PO_SEND_FAILED, PO_SENT, DELIVERY_DELAYED, DELIVERY_RECEIVED, BATCH_RECEIVED, STOCK_ISSUED, GUARDRAIL_BLOCKED, CHAT_ANSWERED, CHAT_REFUSED.
+
+## 3. data/repository.py – Phương Anh (P03)
+
+```python
+def get_connection() -> sqlite3.Connection           # row_factory = sqlite3.Row
+def list_ingredients() -> list[dict]                 # id, name, unit, min_stock, shelf_life_days, daily_usage
+def get_ingredient(ingredient_id) -> dict | None
+def get_batches_fefo(ingredient_id, at: datetime) -> list[Batch]   # chỉ lô còn hạn tại `at`, qty > 0,
+                                                                   # sắp theo expiry_date rồi received_at
+def get_preorder_needs(ingredient_id, start: date, end: date) -> list[dict]
+    # [{"order_id", "delivery_date", "need_qty"}]  need_qty = quantity × qty_per_cake
+def get_open_pos(ingredient_id) -> list[dict]        # PO DRAFT/APPROVED chưa đóng
+def get_sent_pos(ingredient_id) -> list[dict]        # PO SENT, kèm delivery_status, expected_delivery_date
+def get_suppliers(ingredient_id) -> list[dict]       # sup_id, name, price, lead_time_hours, moq, reliability, contact_email, active
+def compute_snapshot_hash(ingredient_id) -> str      # sha256 của lô + đơn đặt + PO đang mở + NCC, sắp thứ tự cố định
+```
+`Batch = {"batch_id", "ingredient_id", "qty", "expiry_date", "received_at", "po_id"}`
+
+## 4. services/fefo.py – Quỳnh Anh (Q01)
+
+```python
+def fefo_projection(ingredient_id, days: int, at: datetime | None = None) -> dict
+```
+```json
+{
+  "remaining_qty": 0.0, "expired_qty": 6.0, "unmet_qty": 2.0, "projected_stock": -2.0,
+  "plan": [{"day": "2026-11-17", "batch_id": "B001", "take_qty": 1.0}],
+  "expired": [{"day": "2026-11-17", "batch_id": "B001", "qty": 6.0}]
+}
+```
+
+## 5. services/calc.py – Quỳnh Anh (Q02)
+
+```python
+def compute_alerts(run_date: date) -> list[AlertDraft]   # chỉ nguyên liệu có projected_stock(H=3) < min_stock
+```
+`AlertDraft` (JSON mẫu, ví dụ Kem tươi):
+```json
+{
+  "ingredient_id": "ING07", "ingredient_name": "Kem tươi Whipping Cream", "unit": "lít",
+  "projected_stock": -2.0, "min_stock": 2.0, "shortage_qty": 4.0,
+  "causes": [{"code": "EXPIRING_LOT", "qty": 6.0}, {"code": "PREORDER", "qty": 3.0}, {"code": "DAILY_USAGE", "qty": 3.0}],
+  "main_cause": "EXPIRING_LOT",
+  "open_po_id": null,
+  "options": [
+    {"option": "A", "sup_id": "SUP_ANHDUONG", "sup_name": "NCC Ánh Dương", "unit_price": 95000,
+     "order_qty": 5.0, "total_cost": 475000, "lead_time_hours": 48, "lead_time_days": 2,
+     "arrival_at": "2026-11-19T08:00:00", "meets_earliest_preorder": false, "cost_diff_pct_vs_A": 0,
+     "reason": "Rẻ nhất trong các NCC hợp lệ"},
+    {"option": "B", "sup_id": "SUP_HOATOC", "sup_name": "NCC Hỏa tốc", "unit_price": 120000,
+     "order_qty": 5.0, "total_cost": 600000, "lead_time_hours": 2, "lead_time_days": 1,
+     "arrival_at": "2026-11-17T10:00:00", "meets_earliest_preorder": true, "cost_diff_pct_vs_A": 26.3,
+     "reason": "Giao nhanh nhất, kịp đơn đặt sớm nhất"}
+  ],
+  "note": null,
+  "snapshot_hash": "…"
+}
+```
+- `causes[].code` ∈ PREORDER, DAILY_USAGE, EXPIRING_LOT, SUPPLIER_DELAY, OPEN_PO.
+- Có PO đang mở → `open_po_id` có giá trị, `options = []`, có mã OPEN_PO.
+- A và B cùng NCC hoặc chỉ 1 NCC hợp lệ → `options` có 1 phần tử, `note` ghi lý do. Không có NCC hợp lệ → `options = []`, `note = "Cần xử lý thủ công"`.
+
+## 6. agent/tools.py – Quỳnh Anh (Q03)
+
+`READ_TOOLS` gồm đúng 4 hàm, tham số như Mục 4 đặc tả:
+`check_inventory_fefo(ingredient_id=None, at=None, days=0)`, `calc_preorder_demand(ingredient_id=None, days=3)`,
+`check_delayed_po(ingredient_id=None, days=3)`, `compare_suppliers(ingredient_id)`. Mỗi hàm trả `dict` JSON được.
+**Không** có `create_draft_po`, `write_audit_log` trong registry.
+
+## 7. agent/core_agent.py, prompts.py – Mai Anh (M02, M03)
+
+```python
+def run_agent(mode: Literal["MORNING_AUDIT", "READ_ONLY_CHAT"], payload: dict, llm=None) -> dict
+```
+- `llm=None` → Gemini thật; test truyền `FakeLLM()` (tests/fake_llm.py, M01).
+- MORNING_AUDIT: `payload = {"run_date": "...", "alerts": [AlertDraft, ...]}` → trả
+  `{"alerts": [{"ingredient_id", "explanation", "tradeoff_a", "tradeoff_b"}]}` (khóa là `ingredient_id` vì lúc này cảnh báo chưa có `alert_id`).
+- READ_ONLY_CHAT: `payload = {"question": "..."}` → trả `{"answer": "...", "refused": bool}`.
+- Lỗi hoặc JSON sai → trả câu mẫu do code sinh, không raise.
+
+## 8. services/inventory_service.py – Phương Anh (P04)
+
+```python
+def issue_stock_fefo(ingredient_id, qty: float, user) -> list[dict]   # [{"batch_id", "taken"}]; raise GuardrailError nếu qty > tồn còn hạn
+def receive_batch(po_id: int, qty: float, expiry_date: datetime | None = None) -> str   # trả batch_id mới
+```
+
+## 9. services/po_service.py – Duyên (D05)
+
+```python
+class GuardrailError(Exception): code: str; message: str
+def create_draft_po(alert_id: int, option: Literal["A", "B"], qty: float, user) -> int   # trả po_id
+def approve_po(po_id: int, user) -> None
+def reject_po(po_id: int, user, reason: str = "") -> None
+def cancel_po(po_id: int, user) -> None
+def send_po(po_id: int, user) -> str           # trả đường dẫn file CSV trong outbox/
+def mark_received(po_id: int, qty: float, user, expiry_date: datetime | None = None) -> str   # trả batch_id
+```
+Mã lỗi `GuardrailError.code`: QTY_INVALID, INGREDIENT_NOT_FOUND, SUPPLIER_INVALID, MOQ_VIOLATION, ALERT_NOT_OPEN, DUPLICATE_PO, NOT_MANAGER, INVALID_TRANSITION, SNAPSHOT_CHANGED, SEND_FAILED.
+
+## 10. services/audit_service.py, chat_service.py – Mai Anh (M04, M05)
+
+```python
+def run_morning_audit(trigger: Literal["SCHEDULED", "MANUAL"], rerun: bool = False, user=None) -> dict
+# {"run_id": int | None, "status": "SUCCEEDED" | "FAILED" | "REJECTED_DUPLICATE" | "ALREADY_DONE",
+#  "alert_ids": [int], "message": str}
+def ask_chat(question: str, user) -> dict      # {"answer": str, "refused": bool}
+```
+
+## 11. Hàm giả cho giao diện (stubs) – Yến
+
+Trước khi hàm thật xong, `services/stubs.py` trả đúng các JSON mẫu ở trên. File này bị xóa ở việc Y09.
+
+## 12. Ghi nhận góp ý
+
+| Người | Phần | Đồng ý / góp ý |
+|---|---|---|
+| Phương Anh | 3, 8 | |
+| Quỳnh Anh | 4, 5, 6 | |
+| Mai Anh | 2, 7, 10 | |
+| Yến | 9, 10, 11 | |
