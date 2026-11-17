@@ -36,8 +36,10 @@ def get_now() -> datetime:
 
         return now()
     except ImportError:
-        demo = os.getenv("DEMO_DATE")  # ví dụ DEMO_DATE=2026-11-20
+        demo = os.getenv("DEMO_DATE", "").strip()  # ví dụ DEMO_DATE=2026-11-20T08:00
         if demo:
+            if "T" in demo:
+                return datetime.fromisoformat(demo)
             return datetime.combine(date.fromisoformat(demo), time(8, 0))
         return datetime.now()
 
@@ -71,8 +73,8 @@ CREATE TABLE inventory_batches (
     batch_id      TEXT PRIMARY KEY,
     ingredient_id TEXT NOT NULL REFERENCES ingredients(id),
     qty           REAL NOT NULL CHECK (qty >= 0),
-    expiry_date   TEXT NOT NULL,                            -- 'YYYY-MM-DD HH:MM:SS'
-    received_at   TEXT NOT NULL,                            -- 'YYYY-MM-DD HH:MM:SS'
+    expiry_date   TEXT NOT NULL,                            -- 'YYYY-MM-DDTHH:MM:SS'
+    received_at   TEXT NOT NULL,                            -- 'YYYY-MM-DDTHH:MM:SS'
     po_id         TEXT REFERENCES purchase_orders(po_id)    -- NULL nếu là tồn đầu kỳ
 );
 
@@ -288,8 +290,8 @@ SUPPLIER_ROWS = [
 
 
 def _dt(d: date, hh: int = 0, mm: int = 0) -> str:
-    """Đổi ngày + giờ thành chuỗi 'YYYY-MM-DD HH:MM:SS' để lưu vào SQLite."""
-    return datetime.combine(d, time(hh, mm)).strftime("%Y-%m-%d %H:%M:%S")
+    """Đổi ngày + giờ thành chuỗi ISO 'YYYY-MM-DDTHH:MM:SS' (có chữ T, theo docs/contracts.md)."""
+    return datetime.combine(d, time(hh, mm)).isoformat(timespec="seconds")
 
 
 def build_batches(today: date, scenario: str):
@@ -406,6 +408,7 @@ def init_db(db_path=DEFAULT_DB, scenario: str = "standard", now: datetime | None
 
 
 def main() -> None:
+    sys.stdout.reconfigure(encoding="utf-8")  # để in được tiếng Việt trên cửa sổ lệnh Windows
     parser = argparse.ArgumentParser(description="Tạo bakery.db và nạp dữ liệu mẫu")
     parser.add_argument("--scenario", choices=["standard", "no_shortage"], default="standard")
     parser.add_argument("--db", default=str(DEFAULT_DB), help="đường dẫn file .db")

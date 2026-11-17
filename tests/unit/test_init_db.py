@@ -93,7 +93,7 @@ def test_kem_tuoi_hai_lo_7_va_3(conn):
     rows = conn.execute("SELECT batch_id, qty, expiry_date FROM inventory_batches "
                         "WHERE ingredient_id='KEM_TUOI' ORDER BY expiry_date").fetchall()
     assert [(r[0], r[1]) for r in rows] == [("KEM-L1", 7), ("KEM-L2", 3)]
-    assert rows[0][2] == "2026-11-20 20:00:00"  # hết hạn 20:00 tối nay
+    assert rows[0][2] == "2026-11-20T20:00:00"  # hết hạn 20:00 tối nay
     assert rows[1][2].startswith("2026-11-25")  # còn hạn 5 ngày
 
 
