@@ -1,0 +1,8 @@
+google-genai
+streamlit
+apscheduler
+pandas
+pydantic
+pytest
+python-dotenv
+tzdata
