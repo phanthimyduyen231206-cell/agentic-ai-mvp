@@ -7,6 +7,8 @@ Chạy rà soát **trước 20:00**, vì lô `KEM-L1` hết hạn lúc 20:00 hô
 
 `projected = current − preorder − daily_usage × 3 + incoming − expired`
 
+**Luôn đặt `DEMO_DATE=<ngày>T08:00`** (trong `.env`) khi chạy `init_db.py` và app, để mọi người ra cùng số liệu. Ngày giờ trong DB lưu dạng ISO có chữ T: `YYYY-MM-DDTHH:MM:SS`.
+
 ## Bộ chuẩn: `python data/init_db.py`
 
 | Nguyên liệu | current | preorder (3 ngày) | daily × 3 | incoming | expired | **projected** | min_stock | Cảnh báo? | Mã nguyên nhân (chính in đậm) | TC |
