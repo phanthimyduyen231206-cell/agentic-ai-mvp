@@ -9,10 +9,12 @@ Nguồn: bản đặc tả `Dac_ta_chi_tiet_MVP_Agent_Tiem_Banh.docx`, Mục 4�
 
 | Nội dung | Quy ước |
 |---|---|
-| Ngày giờ | Giờ Việt Nam, không ghi múi giờ. Trong Python dùng `datetime` / `date`; trong DB và JSON lưu chuỗi ISO `YYYY-MM-DDTHH:MM:SS` (ngày: `YYYY-MM-DD`). Lấy "bây giờ" **chỉ** qua `services.clock`. |
-| Số lượng | `float`, theo đơn vị của nguyên liệu (`ingredients.unit`: kg, lít, quả…). |
-| Tiền | `int`, đơn vị VNĐ. |
-| Mã | `ingredient_id`, `sup_id`, `batch_id`, `order_id` là `str` (vd `ING01`, `SUP_CHINH`, `B001`). `po_id`, `alert_id`, `run_id`, `log_id` là `int` tự tăng. |
+| Ngày giờ | Giờ Việt Nam, không ghi múi giờ. Trong Python dùng `datetime` / `date`; trong DB và JSON lưu chuỗi ISO **có chữ T**: `YYYY-MM-DDTHH:MM:SS` (tạo bằng `dt.isoformat(timespec="seconds")`). Cột chỉ có ngày (`delivery_date`, `expected_delivery_date`, `run_date`) lưu `YYYY-MM-DD`. Lấy "bây giờ" **chỉ** qua `services.clock`. |
+| Giờ demo | Khi chạy `data/init_db.py` và app để phát triển hoặc demo, luôn đặt `DEMO_DATE=<ngày>T08:00` trong `.env`. Dữ liệu mẫu tính hạn lô theo giờ lúc tạo, nên tạo sau 20:00 thì kịch bản Kem tươi sai. |
+| Số lượng | `float`, theo đơn vị của nguyên liệu (`ingredients.unit`: kg, lít, quả, ml). |
+| Tiền | Số VNĐ (DB lưu REAL, JSON trả số). |
+| Mã | Mã dạng chữ (`str`), theo dữ liệu mẫu P02: `ingredient_id` (vd `KEM_TUOI`, `BOT_MI`), `sup_id` (vd `NCC_CHINH`, `NCC_HOA_TOC`, `NCC_ANH_DUONG`), `batch_id` (vd `KEM-L1`), `order_id` (vd `DH01`), **`po_id` (vd `PO-004`; PO mới do `create_draft_po` sinh mã tiếp theo `PO-005`, `PO-006`…)**. `alert_id`, `run_id`, `log_id` là `int` tự tăng. |
+| Người thực hiện (`actor`, `*_by`) | `"system"`, `"scheduler"`, `"gemini"` hoặc `username` của người đăng nhập. |
 | Người dùng | `user = {"username": str, "role": "MANAGER" \| "STAFF"}`, lấy từ phiên đăng nhập trong `app.py`, **không** lấy từ tham số giao diện gửi lên. |
 | Database | `data/bakery.db`, đổi được bằng biến môi trường `BAKERY_DB`. Mở kết nối qua `repository.get_connection()` (trước khi P03 xong thì dùng `sqlite3.connect(os.getenv("BAKERY_DB", "data/bakery.db"))`). |
 | Lỗi nghiệp vụ | Hàm ghi gặp lỗi thì **raise `GuardrailError(code, message)`** (định nghĩa trong `services/po_service.py`), không ghi gì, và ghi log `GUARDRAIL_BLOCKED`. |
@@ -64,8 +66,9 @@ def fefo_projection(ingredient_id, days: int, at: datetime | None = None) -> dic
 ```json
 {
   "remaining_qty": 0.0, "expired_qty": 6.0, "unmet_qty": 2.0, "projected_stock": -2.0,
-  "plan": [{"day": "2026-11-17", "batch_id": "B001", "take_qty": 1.0}],
-  "expired": [{"day": "2026-11-17", "batch_id": "B001", "qty": 6.0}]
+  "plan": [{"day": "2026-11-20", "batch_id": "KEM-L1", "take_qty": 1.0},
+           {"day": "2026-11-21", "batch_id": "KEM-L2", "take_qty": 3.0}],
+  "expired": [{"day": "2026-11-20", "batch_id": "KEM-L1", "qty": 6.0}]
 }
 ```
 
@@ -74,23 +77,23 @@ def fefo_projection(ingredient_id, days: int, at: datetime | None = None) -> dic
 ```python
 def compute_alerts(run_date: date) -> list[AlertDraft]   # chỉ nguyên liệu có projected_stock(H=3) < min_stock
 ```
-`AlertDraft` (JSON mẫu, ví dụ Kem tươi):
+`AlertDraft` (JSON mẫu, Kem tươi với dữ liệu mẫu P02, chạy lúc `DEMO_DATE=2026-11-20T08:00`; tính theo `data/expected.md`):
 ```json
 {
-  "ingredient_id": "ING07", "ingredient_name": "Kem tươi Whipping Cream", "unit": "lít",
+  "ingredient_id": "KEM_TUOI", "ingredient_name": "Kem tươi Whipping Cream", "unit": "lít",
   "projected_stock": -2.0, "min_stock": 2.0, "shortage_qty": 4.0,
   "causes": [{"code": "EXPIRING_LOT", "qty": 6.0}, {"code": "PREORDER", "qty": 3.0}, {"code": "DAILY_USAGE", "qty": 3.0}],
   "main_cause": "EXPIRING_LOT",
   "open_po_id": null,
   "options": [
-    {"option": "A", "sup_id": "SUP_ANHDUONG", "sup_name": "NCC Ánh Dương", "unit_price": 95000,
-     "order_qty": 5.0, "total_cost": 475000, "lead_time_hours": 48, "lead_time_days": 2,
-     "arrival_at": "2026-11-19T08:00:00", "meets_earliest_preorder": false, "cost_diff_pct_vs_A": 0,
-     "reason": "Rẻ nhất trong các NCC hợp lệ"},
-    {"option": "B", "sup_id": "SUP_HOATOC", "sup_name": "NCC Hỏa tốc", "unit_price": 120000,
-     "order_qty": 5.0, "total_cost": 600000, "lead_time_hours": 2, "lead_time_days": 1,
-     "arrival_at": "2026-11-17T10:00:00", "meets_earliest_preorder": true, "cost_diff_pct_vs_A": 26.3,
-     "reason": "Giao nhanh nhất, kịp đơn đặt sớm nhất"}
+    {"option": "A", "sup_id": "NCC_CHINH", "sup_name": "NCC Chính", "unit_price": 90000,
+     "order_qty": 4.0, "total_cost": 360000, "lead_time_hours": 24, "lead_time_days": 1,
+     "arrival_at": "2026-11-21T08:00:00", "meets_earliest_preorder": true, "cost_diff_pct_vs_A": 0,
+     "reason": "Tổng chi phí thấp nhất trong các NCC hợp lệ"},
+    {"option": "B", "sup_id": "NCC_HOA_TOC", "sup_name": "NCC Hỏa tốc", "unit_price": 103500,
+     "order_qty": 4.0, "total_cost": 414000, "lead_time_hours": 2, "lead_time_days": 1,
+     "arrival_at": "2026-11-20T10:00:00", "meets_earliest_preorder": true, "cost_diff_pct_vs_A": 15.0,
+     "reason": "Giao nhanh nhất (2 giờ), có hàng ngay trong sáng nay"}
   ],
   "note": null,
   "snapshot_hash": "…"
@@ -122,19 +125,19 @@ def run_agent(mode: Literal["MORNING_AUDIT", "READ_ONLY_CHAT"], payload: dict, l
 
 ```python
 def issue_stock_fefo(ingredient_id, qty: float, user) -> list[dict]   # [{"batch_id", "taken"}]; raise GuardrailError nếu qty > tồn còn hạn
-def receive_batch(po_id: int, qty: float, expiry_date: datetime | None = None) -> str   # trả batch_id mới
+def receive_batch(po_id: str, qty: float, expiry_date: datetime | None = None) -> str   # trả batch_id mới
 ```
 
 ## 9. services/po_service.py – Duyên (D05)
 
 ```python
 class GuardrailError(Exception): code: str; message: str
-def create_draft_po(alert_id: int, option: Literal["A", "B"], qty: float, user) -> int   # trả po_id
-def approve_po(po_id: int, user) -> None
-def reject_po(po_id: int, user, reason: str = "") -> None
-def cancel_po(po_id: int, user) -> None
-def send_po(po_id: int, user) -> str           # trả đường dẫn file CSV trong outbox/
-def mark_received(po_id: int, qty: float, user, expiry_date: datetime | None = None) -> str   # trả batch_id
+def create_draft_po(alert_id: int, option: Literal["A", "B"], qty: float, user) -> str   # trả po_id mới, vd "PO-005"
+def approve_po(po_id: str, user) -> None
+def reject_po(po_id: str, user, reason: str = "") -> None       # đóng PO: closed_reason = REJECTED; cảnh báo → RESOLVED
+def cancel_po(po_id: str, user) -> None                         # đóng PO: closed_reason = CANCELLED; cảnh báo → RESOLVED
+def send_po(po_id: str, user) -> str           # trả đường dẫn file CSV trong outbox/
+def mark_received(po_id: str, qty: float, user, expiry_date: datetime | None = None) -> str   # trả batch_id
 ```
 Mã lỗi `GuardrailError.code`: QTY_INVALID, INGREDIENT_NOT_FOUND, SUPPLIER_INVALID, MOQ_VIOLATION, ALERT_NOT_OPEN, DUPLICATE_PO, NOT_MANAGER, INVALID_TRANSITION, SNAPSHOT_CHANGED, SEND_FAILED.
 
