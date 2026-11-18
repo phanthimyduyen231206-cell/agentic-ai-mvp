@@ -16,7 +16,7 @@ Nguồn: bản đặc tả `Dac_ta_chi_tiet_MVP_Agent_Tiem_Banh.docx`, Mục 4�
 | Mã | Mã dạng chữ (`str`), theo dữ liệu mẫu P02: `ingredient_id` (vd `KEM_TUOI`, `BOT_MI`), `sup_id` (vd `NCC_CHINH`, `NCC_HOA_TOC`, `NCC_ANH_DUONG`), `batch_id` (vd `KEM-L1`), `order_id` (vd `DH01`), **`po_id` (vd `PO-004`; PO mới do `create_draft_po` sinh mã tiếp theo `PO-005`, `PO-006`…)**. `alert_id`, `run_id`, `log_id` là `int` tự tăng. |
 | Người thực hiện (`actor`, `*_by`) | `"system"`, `"scheduler"`, `"gemini"` hoặc `username` của người đăng nhập. |
 | Người dùng | `user = {"username": str, "role": "MANAGER" \| "STAFF"}`, lấy từ phiên đăng nhập trong `app.py`, **không** lấy từ tham số giao diện gửi lên. |
-| Database | `data/bakery.db`, đổi được bằng biến môi trường `BAKERY_DB`. Mở kết nối qua `repository.get_connection()` (trước khi P03 xong thì dùng `sqlite3.connect(os.getenv("BAKERY_DB", "data/bakery.db"))`). |
+| Database | `data/bakery.db`, đổi được bằng **một** biến môi trường duy nhất `BAKERY_DB_PATH`. Lấy đường dẫn bằng `repository.get_db_path()`, mở kết nối bằng `repository.get_connection()`; không module nào tự đọc biến môi trường này. |
 | Lỗi nghiệp vụ | Hàm ghi gặp lỗi thì **raise `GuardrailError(code, message)`** (định nghĩa trong `services/po_service.py`), không ghi gì, và ghi log `GUARDRAIL_BLOCKED`. |
 
 ## 1. services/clock.py – Duyên (D03)
@@ -43,19 +43,31 @@ def write_audit_log(actor: str, event_type: str, entity_type: str | None = None,
 
 ## 3. data/repository.py – Phương Anh (P03)
 
+Tên hàm dưới đây là tên **thật** trong `data/repository.py` (đã merge, PR #6). Mọi hàm nhận thêm `conn=None`:
+không truyền thì hàm tự mở kết nối và tự commit; truyền `conn` thì hàm không commit, người gọi tự commit/rollback.
+Kết quả trả về là `dict` (1 dòng) hoặc `list[dict]`.
+
 ```python
-def get_connection() -> sqlite3.Connection           # row_factory = sqlite3.Row
-def list_ingredients() -> list[dict]                 # id, name, unit, min_stock, shelf_life_days, daily_usage
+def get_db_path() -> str                             # đọc BAKERY_DB_PATH, mặc định data/bakery.db
+def get_connection(db_path=None) -> sqlite3.Connection   # row_factory = sqlite3.Row, bật foreign_keys
+def get_ingredients() -> list[dict]                  # id, name, unit, min_stock, shelf_life_days, daily_usage
 def get_ingredient(ingredient_id) -> dict | None
-def get_batches_fefo(ingredient_id, at: datetime) -> list[Batch]   # chỉ lô còn hạn tại `at`, qty > 0,
-                                                                   # sắp theo expiry_date rồi received_at
-def get_preorder_needs(ingredient_id, start: date, end: date) -> list[dict]
-    # [{"order_id", "delivery_date", "need_qty"}]  need_qty = quantity × qty_per_cake
-def get_open_pos(ingredient_id) -> list[dict]        # PO DRAFT/APPROVED chưa đóng
-def get_sent_pos(ingredient_id) -> list[dict]        # PO SENT, kèm delivery_status, expected_delivery_date
-def get_suppliers(ingredient_id) -> list[dict]       # sup_id, name, price, lead_time_hours, moq, reliability, contact_email, active
-def compute_snapshot_hash(ingredient_id) -> str      # sha256 của lô + đơn đặt + PO đang mở + NCC, sắp thứ tự cố định
+def get_batches_fefo(ingredient_id, at) -> list[Batch]   # chỉ lô còn hạn tại `at` (expiry_date > at), qty > 0,
+                                                         # sắp theo expiry_date rồi received_at
+def get_pre_order_needs(ingredient_id, from_date=None, to_date=None) -> list[dict]
+    # mỗi dòng = 1 đơn đặt trước dùng nguyên liệu này: các cột của pre_orders + qty_per_cake + need_qty
+    # need_qty = quantity × qty_per_cake; lọc delivery_date trong [from_date, to_date]
+def get_purchase_orders(status=None, ingredient_id=None, open_only=False) -> list[dict]
+    # PO đã gửi của 1 nguyên liệu: get_purchase_orders(status="SENT", ingredient_id=...)
+def get_open_purchase_orders(ingredient_id=None) -> list[dict]
+    # PO chưa đóng (closed_reason IS NULL) và chưa nhận hàng, gồm cả DRAFT, APPROVED và SENT chưa giao.
+    # Muốn riêng PO chưa gửi (mã OPEN_PO) thì lọc thêm status in ("DRAFT", "APPROVED").
+def get_suppliers(ingredient_id=None, active_only=False) -> list[dict]   # sup_id, name, price, lead_time_hours, moq, reliability, contact_email, active
+def compute_snapshot_hash(ingredient_id) -> str      # sha256 của nguyên liệu + lô + đơn đặt + PO đang mở + NCC
 ```
+Ngoài ra còn các hàm đọc/ghi cho từng bảng (`insert_batch`, `update_batch_qty`, `get_alert`, `insert_alert`, `update_alert`,
+`insert_purchase_order`, `update_purchase_order`, `get_audit_runs`, `insert_audit_run`, `update_audit_run`…), xem docstring trong file.
+
 `Batch = {"batch_id", "ingredient_id", "qty", "expiry_date", "received_at", "po_id"}`
 
 ## 4. services/fefo.py – Quỳnh Anh (Q01)

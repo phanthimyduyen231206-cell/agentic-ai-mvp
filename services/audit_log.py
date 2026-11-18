@@ -3,9 +3,9 @@
 Chủ file: Duyên (D04). Đây là hàm của application code; Gemini không gọi được (không có trong tool registry).
 """
 import json
-import os
 import sqlite3
 
+from data.repository import get_db_path
 from services import clock
 
 EVENT_TYPES = (
@@ -15,10 +15,6 @@ EVENT_TYPES = (
     "DELIVERY_DELAYED", "DELIVERY_RECEIVED", "BATCH_RECEIVED", "STOCK_ISSUED",
     "GUARDRAIL_BLOCKED", "CHAT_ANSWERED", "CHAT_REFUSED",
 )
-
-
-def _db_path() -> str:
-    return os.getenv("BAKERY_DB", os.path.join("data", "bakery.db"))
 
 
 def write_audit_log(actor, event_type, entity_type=None, entity_id=None, run_id=None, detail=None, conn=None):
@@ -34,7 +30,7 @@ def write_audit_log(actor, event_type, entity_type=None, entity_id=None, run_id=
 
     own = conn is None
     if own:
-        conn = sqlite3.connect(_db_path())
+        conn = sqlite3.connect(get_db_path())
     try:
         cur = conn.execute(
             "INSERT INTO audit_logs (created_at, actor, event_type, entity_type, entity_id, run_id, detail_json) "
