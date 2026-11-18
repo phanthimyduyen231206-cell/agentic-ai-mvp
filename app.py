@@ -3,21 +3,63 @@
 Chạy:  streamlit run app.py
 
 Nguyên tắc: file này CHỈ nhận thao tác và hiển thị, KHÔNG chứa luật nghiệp vụ
-(tính tồn, chọn A/B, kiểm tra quyền... đều do services/ làm). Hiện đang gọi
-HÀM GIẢ trong services/stubs.py (đặt tên là `api`). Ở việc Y03/Y09 chỉ cần đổi
-dòng import `api` sang hàm thật.
+(tính tồn, chọn A/B, kiểm tra quyền... đều do services/ làm). Mọi hàm backend
+được lấy qua "ổ chia" `api` ngay bên dưới. Hiện tất cả đang trỏ về HÀM GIẢ
+trong services/stubs.py. Ở việc Y03/Y09 chỉ sửa khối "ổ chia" này, phần còn
+lại của file giữ nguyên.
 """
 import hmac
 import math
 import os
 from datetime import date, datetime, timedelta
 from datetime import time as dtime
+from types import SimpleNamespace
 
 import pandas as pd
 import streamlit as st
 
-# ĐỔI Ở Y03/Y09: thay stubs bằng po_service, inventory_service, audit_service...
-from services import stubs as api
+# ===========================================================================
+# Ổ CHIA: nơi DUY NHẤT nối giao diện với backend
+# ---------------------------------------------------------------------------
+# Hiện mọi hàm trỏ về hàm giả (_fake). Khi hàm thật của ai đã merge vào main,
+# thêm dòng import module đó rồi đổi đúng các dòng có ghi tên người đó, ví dụ:
+#     from services import po_service
+#     create_draft_po=po_service.create_draft_po,
+# Y03: đổi nhóm Duyên (po_service) và Phương Anh (inventory_service, repository).
+# Y09: đổi nốt nhóm còn lại, xóa dòng `reset`, xóa import _fake và stubs.py.
+# ===========================================================================
+from services import stubs as _fake
+
+api = SimpleNamespace(
+    # --- services/clock.py (Duyên, D03) ---
+    now=_fake.now,
+    # --- data/repository.py (Phương Anh, P03) ---
+    list_ingredients=_fake.list_ingredients,
+    get_batches_fefo=_fake.get_batches_fefo,
+    get_suppliers=_fake.get_suppliers,
+    # --- services/fefo.py (Quỳnh Anh, Q01) ---
+    fefo_projection=_fake.fefo_projection,
+    # --- services/inventory_service.py (Phương Anh, P04) ---
+    issue_stock_fefo=_fake.issue_stock_fefo,
+    # --- services/po_service.py (Duyên, D05) ---
+    GuardrailError=_fake.GuardrailError,
+    create_draft_po=_fake.create_draft_po,
+    approve_po=_fake.approve_po,
+    reject_po=_fake.reject_po,
+    cancel_po=_fake.cancel_po,
+    send_po=_fake.send_po,
+    mark_received=_fake.mark_received,
+    # --- services/audit_service.py (Mai Anh, M05) ---
+    run_morning_audit=_fake.run_morning_audit,
+    # --- CHƯA CÓ TRONG CONTRACTS: chờ nhóm chốt ai làm ---
+    list_preorders=_fake.list_preorders,
+    list_pos=_fake.list_pos,
+    list_alerts=_fake.list_alerts,
+    get_today_run=_fake.get_today_run,
+    dismiss_alert=_fake.dismiss_alert,
+    # --- Chỉ dùng khi phát triển (nút Reset ở thanh bên), XÓA ở Y09 ---
+    reset=_fake.reset,
+)
 
 st.set_page_config(page_title="Trợ lý cung ứng tiệm bánh", page_icon="🥐", layout="wide")
 
@@ -179,6 +221,16 @@ def highlight_rows(style_by_prefix):
     return _apply
 
 
+def styled_table(df, style_by_prefix):
+    """Tô màu hàng và hiện số gọn (10 thay vì 10.000000 như mặc định của pandas)."""
+    def _fmt(value):
+        if isinstance(value, float):
+            return fmt_qty(value)
+        return value
+
+    return df.style.apply(highlight_rows(style_by_prefix), axis=1).format(_fmt)
+
+
 def render_tab1(user):
     show_flash("tab1")
     now = api.now()
@@ -206,8 +258,7 @@ def render_tab1(user):
             "Tình trạng": "⚠️ THIẾU" if short else "✅ Đủ",
         })
     df = pd.DataFrame(summary_rows)
-    st.dataframe(df.style.apply(highlight_rows(("Tình trạng", "⚠️", RED_STYLE)), axis=1),
-                 hide_index=True)
+    st.dataframe(styled_table(df, ("Tình trạng", "⚠️", RED_STYLE)), hide_index=True)
 
     # ---- 2. Bảng lô theo FEFO ---------------------------------------------
     st.subheader("2. Tồn theo lô (FEFO: hạn sớm nhất ở trên)")
@@ -232,8 +283,8 @@ def render_tab1(user):
                 "Ghi chú": f"⚠️ {fmt_qty(exp_qty)} {ing['unit']} sẽ hết hạn trước khi kịp dùng" if exp_qty else "",
             })
     if lot_rows:
-        st.dataframe(pd.DataFrame(lot_rows).style.apply(
-            highlight_rows(("Ghi chú", "⚠️", RED_STYLE)), axis=1), hide_index=True)
+        st.dataframe(styled_table(pd.DataFrame(lot_rows), ("Ghi chú", "⚠️", RED_STYLE)),
+                     hide_index=True)
     else:
         st.info("Không có lô nào còn hạn.")
 
@@ -277,8 +328,8 @@ def render_tab1(user):
                 "Dự kiến giao": fmt_date(p["expected_delivery_date"]),
                 "Đóng (closed_reason)": p["closed_reason"] or "—",
             })
-        st.dataframe(pd.DataFrame(po_rows).style.apply(
-            highlight_rows(("delivery_status", "DELAYED", ORANGE_STYLE)), axis=1), hide_index=True)
+        st.dataframe(styled_table(pd.DataFrame(po_rows), ("delivery_status", "DELAYED", ORANGE_STYLE)),
+                     hide_index=True)
     else:
         st.info("Chưa có PO nào.")
 
