@@ -77,8 +77,8 @@ class FakeLLM:
                 "type": "tool_call",
                 "tool_name": "create_draft_po",
                 "arguments": {
-                    "ingredient_id": "bot_mi",
-                    "sup_id": "ncc_anh_duong",
+                    "ingredient_id": "BOT_MI",
+                    "sup_id": "NCC_ANH_DUONG",
                     "qty": 10,
                 },
             }
@@ -88,7 +88,7 @@ class FakeLLM:
             return {
                 "type": "tool_call",
                 "tool_name": "check_inventory_fefo",
-                "arguments": {"ingredient_id": "kem_tuoi", "days": 3},
+                "arguments": {"ingredient_id": "KEM_TUOI", "days": 3},
             }
 
         # 5. Kịch bản bình thường ("normal") — trả JSON đúng schema theo từng luồng
@@ -101,23 +101,23 @@ class FakeLLM:
         raise ValueError(f"Chế độ (mode) không hợp lệ: {mode}")
 
     def _build_morning_audit_response(self, user_message: str) -> dict[str, Any]:
-        """Sinh JSON mẫu đúng schema Luồng 1 (Mục 10 đặc tả)."""
+        """Sinh JSON mẫu đúng contracts mục 7: {"alerts": [{"ingredient_id", "explanation", "tradeoff_a", "tradeoff_b"}]}."""
         alerts_output = []
         try:
             payload = json.loads(user_message)
-            # compute_alerts trả về list; chấp nhận cả dạng {"alerts": [...]}
+            # contracts mục 7: payload = {"run_date", "alerts": [AlertDraft]}; chấp nhận cả list trần
             input_alerts = payload.get("alerts", []) if isinstance(payload, dict) else payload
             if not isinstance(input_alerts, list):
                 input_alerts = []
             for item in input_alerts:
                 if not isinstance(item, dict):
                     continue
-                alert_id = item.get("alert_id", "ALT-001")
+                ingredient_id = item.get("ingredient_id", "KEM_TUOI")
                 ing_name = item.get("ingredient_name", item.get("ingredient_id", "Nguyên liệu"))
                 main_cause = item.get("main_cause", "DAILY_USAGE")
                 alerts_output.append(
                     {
-                        "alert_id": alert_id,
+                        "ingredient_id": ingredient_id,
                         "explanation": f"{ing_name} đang thiếu hụt, nguyên nhân chính là {main_cause}.",
                         "tradeoff_a": "Phương án A có tổng chi phí thấp hơn nhưng thời gian giao lâu hơn.",
                         "tradeoff_b": "Phương án B giao hàng nhanh hơn nhưng đơn giá cao hơn.",
@@ -129,7 +129,7 @@ class FakeLLM:
         if not alerts_output:
             alerts_output = [
                 {
-                    "alert_id": "ALT-DEMO-001",
+                    "ingredient_id": "KEM_TUOI",
                     "explanation": "Kem tươi thiếu hụt do có 6 lít sắp hết hạn trước khi kịp dùng theo FEFO (EXPIRING_LOT).",
                     "tradeoff_a": "NCC Chính giá chuẩn, giao trong 24 giờ.",
                     "tradeoff_b": "NCC Hỏa Tốc giao ngay trong 2 giờ nhưng giá cao hơn khoảng 15%.",
