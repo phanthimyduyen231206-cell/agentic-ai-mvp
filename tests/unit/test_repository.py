@@ -3,8 +3,6 @@
 Chay:  pytest tests/unit/test_repository.py -v
 """
 
-import shutil
-import subprocess
 import sys
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -28,15 +26,11 @@ def _now():
 
 @pytest.fixture()
 def db(tmp_path, monkeypatch):
-    """Chay init_db.py tao bakery.db moi, chep ra file tam, tro repository vao file tam."""
-    result = subprocess.run(
-        [sys.executable, "data/init_db.py"], cwd=ROOT, capture_output=True, text=True
-    )
-    assert result.returncode == 0, "init_db.py loi:\n" + result.stderr
-    src = ROOT / "data" / "bakery.db"
-    assert src.exists(), "Khong thay data/bakery.db sau khi chay init_db.py"
-    dst = tmp_path / "test.db"
-    shutil.copy(src, dst)
+    """Tao DB mau thang trong thu muc tam cua test (khong dung toi data/bakery.db that),
+    roi tro repository vao file tam do."""
+    from data.init_db import init_db
+
+    dst = init_db(tmp_path / "test.db", now=_now())
     monkeypatch.setenv("BAKERY_DB_PATH", str(dst))
     return dst
 

@@ -150,6 +150,8 @@ def reject_po(po_id: str, user, reason: str = "") -> None       # đóng PO: clo
 def cancel_po(po_id: str, user) -> None                         # đóng PO: closed_reason = CANCELLED; cảnh báo → RESOLVED
 def send_po(po_id: str, user) -> str           # trả đường dẫn file CSV trong outbox/
 def mark_received(po_id: str, qty: float, user, expiry_date: datetime | None = None) -> str   # trả batch_id
+def dismiss_alert(alert_id: int, user) -> None  # quản lý bấm "Bỏ qua": cảnh báo OPEN → DISMISSED, ghi resolved_at,
+                                                # log ALERT_DISMISSED; lỗi NOT_MANAGER / ALERT_NOT_OPEN
 ```
 Mã lỗi `GuardrailError.code`: QTY_INVALID, INGREDIENT_NOT_FOUND, SUPPLIER_INVALID, MOQ_VIOLATION, ALERT_NOT_OPEN, DUPLICATE_PO, NOT_MANAGER, INVALID_TRANSITION, SNAPSHOT_CHANGED, SEND_FAILED.
 
@@ -161,10 +163,31 @@ def run_morning_audit(trigger: Literal["SCHEDULED", "MANUAL"], rerun: bool = Fal
 #  "alert_ids": [int], "message": str}
 def ask_chat(question: str, user) -> dict      # {"answer": str, "refused": bool}
 ```
+Lưu kết quả Gemini vào bảng `alerts` (bảng không có cột riêng cho đánh đổi):
+- `explanation` ← `explanation` của Gemini (hoặc câu mẫu dự phòng).
+- `options_json` ← danh sách phương án của calc, mỗi phương án thêm khóa `"tradeoff"`: A nhận `tradeoff_a`, B nhận `tradeoff_b`.
 
-## 11. Hàm giả cho giao diện (stubs) – Yến
+## 11. Hàm cho giao diện – `services/ui_api.py` (Yến) và stubs
 
-Trước khi hàm thật xong, `services/stubs.py` trả đúng các JSON mẫu ở trên. File này bị xóa ở việc Y09.
+`app.py` **chỉ import `services/ui_api.py`**. File này gom các hàm giao diện cần, gọi hàm thật ở các module khác và
+đổi dữ liệu sang dạng dễ hiển thị (giải mã JSON, ghép tên nguyên liệu và tên NCC). Khi nối hàm thật (Y03, Y09)
+chỉ sửa `ui_api.py`, không sửa `app.py`. Trước khi hàm thật xong, `ui_api.py` gọi `services/stubs.py`;
+stubs bị xóa ở việc Y09.
+
+| Hàm trong ui_api | Lấy từ hàm thật | Ghi chú |
+|---|---|---|
+| `get_ingredients()` | `repository.get_ingredients()` | |
+| `get_batches_fefo(ingredient_id, at)` | `repository.get_batches_fefo` | `at` = `clock.now()` |
+| `list_preorders(from_date=None, to_date=None)` | `repository.get_pre_orders` | |
+| `list_pos(status=None, ingredient_id=None)` | `repository.get_purchase_orders` | ui_api ghép thêm `sup_name` từ `repository.get_supplier(sup_id)` |
+| `list_alerts(run_id=None, status=None)` | `repository.get_alerts` | ui_api giải mã `causes`, `options_json` (JSON) và ghép `ingredient_name`, `unit`, `min_stock` từ `repository.get_ingredient` |
+| `get_today_run()` | `repository.get_latest_audit_run(run_date=clock.today())` | trả `None` nếu hôm nay chưa rà soát |
+| `run_morning_audit(...)` | `audit_service.run_morning_audit` | |
+| `ask_chat(...)` | `chat_service.ask_chat` | |
+| `issue_stock_fefo(...)` | `inventory_service.issue_stock_fefo` | |
+| `create_draft_po`, `approve_po`, `reject_po`, `cancel_po`, `send_po`, `mark_received`, `dismiss_alert` | `po_service` (Mục 9) | |
+| `GuardrailError` | `po_service.GuardrailError` | `app.py` bắt lỗi này để báo đỏ |
+| `get_audit_logs(...)`, `get_audit_runs(...)` | `repository.get_audit_logs`, `repository.get_audit_runs` | Tab 4 Nhật ký |
 
 ## 12. Ghi nhận góp ý
 
