@@ -16,7 +16,7 @@ def db(tmp_path, monkeypatch):
     path = tmp_path / "test.db"
     with sqlite3.connect(path) as conn:
         conn.execute(SCHEMA)
-    monkeypatch.setenv("BAKERY_DB", str(path))
+    monkeypatch.setenv("BAKERY_DB_PATH", str(path))
     monkeypatch.setenv("DEMO_DATE", "2026-11-20T08:00")
     return path
 
