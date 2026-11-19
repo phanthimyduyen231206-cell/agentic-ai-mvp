@@ -405,10 +405,13 @@ def mark_received(po_id: str, qty: float, user, expiry_date=None) -> str:
 
     MVP nhận một lần đủ số lượng đặt (Mục 5.5). Lô mới do inventory_service.receive_batch (P04) tạo;
     receive_batch ghi BATCH_RECEIVED, hàm này ghi DELIVERY_RECEIVED.
+
+    Chống nhận trùng: trong một giao dịch BEGIN IMMEDIATE, kiểm tra rồi đánh dấu PO RECEIVED ngay
+    (lần bấm thứ hai sẽ thấy RECEIVED và bị chặn). Sau đó mới tạo lô; tạo lô lỗi thì trả PO về như cũ.
     """
     from services import inventory_service   # import lúc gọi để không phụ thuộc vòng
 
-    def check(conn):
+    def claim(conn):
         _require_manager(user)
         po = _open_po_or_fail(conn, po_id)
         _require_status(po, "SENT", "nhận hàng cho")
@@ -423,21 +426,23 @@ def mark_received(po_id: str, qty: float, user, expiry_date=None) -> str:
         if not math.isfinite(q) or q <= 0 or abs(q - remaining) > _EPS:
             raise GuardrailError("QTY_INVALID",
                                  f"MVP chỉ nhận một lần đủ số lượng: cần nhận đúng {remaining:g}.")
-        return po, q
-
-    po, q = _run_write(user, "mark_received", "purchase_order", po_id, check)
-
-    batch_id = inventory_service.receive_batch(po_id, q, expiry_date)
-
-    def work(conn):
-        now = _now_iso()
         repository.update_purchase_order(po_id, {
             "received_qty": float(po["received_qty"] or 0) + q, "delivery_status": "RECEIVED",
         }, conn=conn)
-        write_audit_log(_actor(user), "DELIVERY_RECEIVED", "purchase_order", po_id,
-                        detail={"qty": q, "batch_id": batch_id, "received_at": now}, conn=conn)
+        return po, q
 
-    _run_write(user, "mark_received", "purchase_order", po_id, work)
+    po, q = _run_write(user, "mark_received", "purchase_order", po_id, claim)
+
+    try:
+        batch_id = inventory_service.receive_batch(po_id, q, expiry_date)
+    except Exception:
+        repository.update_purchase_order(po_id, {   # tạo lô lỗi: PO trở lại chờ giao, nhận lại được
+            "received_qty": po["received_qty"], "delivery_status": po["delivery_status"],
+        })
+        raise
+
+    write_audit_log(_actor(user), "DELIVERY_RECEIVED", "purchase_order", po_id,
+                    detail={"qty": q, "batch_id": batch_id, "received_at": _now_iso()})
     return batch_id
 
 

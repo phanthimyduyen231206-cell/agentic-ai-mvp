@@ -231,6 +231,51 @@ def test_mark_received_phai_nhan_du_va_la_quan_ly(db, fake_receive):
     assert fake_receive == []   # không tạo lô khi bị chặn
 
 
+def test_nhan_hang_bam_hai_lan_cung_luc_chi_tao_mot_lo(db, monkeypatch):
+    import threading
+    import time
+    from services import inventory_service
+    po_id = _sent()
+    made = []
+
+    def slow_receive(po_id, qty, expiry_date=None):
+        time.sleep(0.2)
+        made.append(po_id)
+        return f"BOLAT-L{len(made) + 8}"
+
+    monkeypatch.setattr(inventory_service, "receive_batch", slow_receive, raising=False)
+    results = []
+
+    def click():
+        try:
+            results.append(po_service.mark_received(po_id, 15, MANAGER))
+        except GuardrailError as err:
+            results.append(err.code)
+
+    threads = [threading.Thread(target=click) for _ in range(3)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    assert len(made) == 1
+    assert sorted(results) == ["BOLAT-L9", "INVALID_TRANSITION", "INVALID_TRANSITION"]
+
+
+def test_tao_lo_loi_thi_po_tro_lai_cho_giao(db, monkeypatch):
+    from services import inventory_service
+    po_id = _sent()
+
+    def broken(po_id, qty, expiry_date=None):
+        raise RuntimeError("DB lỗi")
+
+    monkeypatch.setattr(inventory_service, "receive_batch", broken, raising=False)
+    with pytest.raises(RuntimeError):
+        po_service.mark_received(po_id, 15, MANAGER)
+    po = repository.get_purchase_order(po_id)
+    assert (po["delivery_status"], po["received_qty"]) == ("PENDING", 0)
+    assert logs("DELIVERY_RECEIVED") == []
+
+
 # ---------------------------------------------------------------- bỏ qua cảnh báo
 def test_dismiss_alert(db):
     alert_id = make_alert("BO_LAT", BO_LAT_OPTIONS)
