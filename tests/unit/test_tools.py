@@ -119,6 +119,15 @@ def test_inventory_kem_tuoi_fefo_order_and_expiring(db):
     assert proj["projected_stock"] == pytest.approx(-2.0)
 
 
+def test_inventory_every_batch_has_required_fields(db):
+    r = check_inventory_fefo("KEM_TUOI", days=3)
+    assert r["batches"]
+    for b in r["batches"]:
+        assert {"unit", "batch_id", "qty", "expiry_date"} <= set(b)
+        assert b["unit"] == r["unit"] == "lít"
+        assert "T" in b["expiry_date"]
+
+
 def test_inventory_days_zero_has_no_projection(db):
     r = check_inventory_fefo("KEM_TUOI")
     assert r["expiring_qty"] == 0.0

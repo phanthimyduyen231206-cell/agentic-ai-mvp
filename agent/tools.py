@@ -138,6 +138,7 @@ def _inventory_one(ing: dict, at: datetime, days: int) -> dict:
         batches.append({
             "batch_id": b["batch_id"],
             "qty": _r(qty),
+            "unit": ing["unit"],
             "expiry_date": _iso(expiry),
             "received_at": _iso(b.get("received_at")),
             "days_left": round((expiry - at).total_seconds() / 86400, 2),
