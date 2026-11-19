@@ -160,7 +160,7 @@ CREATE TABLE alerts (
     event_type      TEXT NOT NULL DEFAULT 'SHORTAGE',
     status          TEXT NOT NULL CHECK (status IN ('OPEN', 'SELECTED', 'RESOLVED', 'DISMISSED')),
     main_cause      TEXT,
-    causes          TEXT NOT NULL DEFAULT '[]',             -- JSON: [{"code": "EXPIRING_LOT", "qty": 6.0}, ...]
+    causes          TEXT NOT NULL DEFAULT '[]',             -- JSON:[{{"code": "EXPIRING_LOT", "qty": 6.0}}, ...]
     projected_stock REAL,
     shortage_qty    REAL,
     options_json    TEXT NOT NULL DEFAULT '[]',             -- JSON phương án A/B do calc.py tính
