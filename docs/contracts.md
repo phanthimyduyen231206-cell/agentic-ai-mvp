@@ -167,6 +167,20 @@ def mark_received(po_id: str, qty: float, user, expiry_date: datetime | None = N
 def dismiss_alert(alert_id: int, user) -> None  # quản lý bấm "Bỏ qua": cảnh báo OPEN → DISMISSED, ghi resolved_at,
                                                 # log ALERT_DISMISSED; lỗi NOT_MANAGER / ALERT_NOT_OPEN
 ```
+- `user` là dict do app tạo khi đăng nhập: `{"username": "...", "role": "MANAGER" | "STAFF"}`. Mọi hàm trên
+  (kể cả `create_draft_po`, `mark_received`, `dismiss_alert`) chỉ cho `role == "MANAGER"`, sai thì `NOT_MANAGER`.
+- Bị chặn → không ghi gì, raise `GuardrailError`, ghi `GUARDRAIL_BLOCKED`. Riêng gửi thất bại: PO vẫn APPROVED,
+  tăng `send_attempts`, lưu `last_send_error`, ghi `PO_SEND_FAILED`, rồi raise `GuardrailError("SEND_FAILED")`.
+- `send_po` đặt `delivery_status = PENDING`, `expected_delivery_date = sent_at + lead_time_hours`
+  (**chỉ có ngày** `YYYY-MM-DD`, như Mục 0); file `outbox/PO-xxx.csv` (UTF-8 có BOM để Excel đọc đúng tiếng Việt).
+- Cảnh báo của PO → RESOLVED khi PO SENT, REJECTED hoặc CANCELLED.
+- `mark_received` chỉ nhận một lần đủ số lượng còn lại (khác → `QTY_INVALID`), gọi
+  `inventory_service.receive_batch(po_id, qty, expiry_date)` để tạo lô. **`receive_batch` ghi `BATCH_RECEIVED`**,
+  `mark_received` ghi `DELIVERY_RECEIVED` và đổi `delivery_status = RECEIVED`, `received_qty`.
+  `receive_batch` không tự đổi trạng thái PO và **không kiểm `delivery_status`**: để chống nhận trùng,
+  `mark_received` đánh dấu PO RECEIVED trước rồi mới gọi `receive_batch` (lỗi thì trả PO về như cũ).
+  `receive_batch` chỉ cần đọc PO để lấy `ingredient_id`, tạo lô (hạn mặc định = ngày nhận + shelf_life_days), trả `batch_id`.
+
 Mã lỗi `GuardrailError.code`: QTY_INVALID, INGREDIENT_NOT_FOUND, SUPPLIER_INVALID, MOQ_VIOLATION, ALERT_NOT_OPEN, DUPLICATE_PO, NOT_MANAGER, INVALID_TRANSITION, SNAPSHOT_CHANGED, SEND_FAILED.
 
 ## 10. services/audit_service.py, chat_service.py – Mai Anh (M04, M05)
