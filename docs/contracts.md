@@ -122,6 +122,20 @@ def compute_alerts(run_date: date) -> list[AlertDraft]   # chỉ nguyên liệu 
 `check_delayed_po(ingredient_id=None, days=3)`, `compare_suppliers(ingredient_id)`. Mỗi hàm trả `dict` JSON được.
 **Không** có `create_draft_po`, `write_audit_log` trong registry.
 
+**Kết quả trả về** (tên trường dùng chung cho tool giả trong test, prompt và giao diện; số lượng theo `unit` của nguyên liệu):
+
+| Tool | Trường chính |
+|---|---|
+| Mọi tool | `ok: true`. Lỗi đầu vào: `{"ok": false, "error_code", "message"}`, không raise |
+| `check_inventory_fefo` (có `ingredient_id`) | `ingredient_id`, `ingredient_name`, `unit`, `at`, `days`, `min_stock`, **`on_hand_qty`**, `expiring_qty`, `batches: [{batch_id, qty, unit, expiry_date, received_at, days_left, expires_within_days}]`; khi `days > 0` thêm `fefo_projection: {expired_qty, unmet_qty, remaining_qty, projected_stock, expired, plan}` (Mục 4) |
+| `check_inventory_fefo` (không có `ingredient_id`) | `at`, `days`, `items: [{ingredient_id, ingredient_name, unit, min_stock, on_hand_qty, expiring_qty, batch_count}]` |
+| `calc_preorder_demand` | `days`, `from_date`, `to_date`, `ingredient_id`, `ingredient_name`, `unit`, `preorder_demand`, `daily_usage`, `retail_demand`, `earliest_preorder_date`, `orders: [{order_id, cake_name, quantity, qty_per_cake, need_qty, delivery_date}]`; không có `ingredient_id` thì các trường nguyên liệu nằm trong `items: [...]` |
+| `check_delayed_po` | `days`, `from_date`, `to_date`, `incoming_pos`, `delayed_pos`, `overdue_not_yet_flagged`, `open_unsent_pos` (mỗi PO: `po_id, ingredient_id, sup_id, order_qty, received_qty, remaining_qty, status, delivery_status, expected_delivery_date`); có `ingredient_id` thì thêm **`incoming_stock`**, **`delayed_qty`**; không có thì `by_ingredient: [{ingredient_id, incoming_stock, delayed_qty}]` |
+| `compare_suppliers` | `ingredient_id`, `ingredient_name`, `unit`, `suppliers: [{sup_id, name, price, lead_time_hours, lead_time_days, moq, reliability, active, has_contact_email}]` |
+
+- Tên số lượng tồn là **`on_hand_qty`** (không dùng `total_qty`).
+- Giá: bảng NCC và `compare_suppliers` dùng **`price`**; phương án A/B của calc (Mục 5) và PO dùng **`unit_price`**. Cùng một giá trị, khác tên theo nơi dùng.
+
 ## 7. agent/core_agent.py, prompts.py – Mai Anh (M02, M03)
 
 ```python
