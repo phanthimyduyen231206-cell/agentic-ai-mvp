@@ -68,14 +68,15 @@ def _row(cur: sqlite3.Cursor) -> Optional[dict]:
 
 
 def _to_db_time(value: Any) -> str:
-    """Doi date/datetime/str thanh chuoi 'YYYY-MM-DD HH:MM:SS' (gio dia phuong, bo mui gio)."""
+    """Doi date/datetime/str thanh chuoi ISO 'YYYY-MM-DDTHH:MM:SS' theo contracts.md
+    (gio Viet Nam, khong ghi mui gio)."""
     if isinstance(value, datetime):
-        return value.replace(tzinfo=None, microsecond=0).strftime("%Y-%m-%d %H:%M:%S")
+        return value.replace(tzinfo=None, microsecond=0).isoformat(timespec="seconds")
     if isinstance(value, date):
-        return value.strftime("%Y-%m-%d 00:00:00")
-    text = str(value).strip().replace("T", " ")
+        return value.isoformat() + "T00:00:00"
+    text = str(value).strip().replace(" ", "T", 1)
     if len(text) == 10:  # chi co ngay
-        text += " 00:00:00"
+        text += "T00:00:00"
     return text[:19]
 
 
