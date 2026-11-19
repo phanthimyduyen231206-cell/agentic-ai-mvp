@@ -167,6 +167,13 @@ Lưu kết quả Gemini vào bảng `alerts` (bảng không có cột riêng cho
 - `explanation` ← `explanation` của Gemini (hoặc câu mẫu dự phòng).
 - `options_json` ← danh sách phương án của calc, mỗi phương án thêm khóa `"tradeoff"`: A nhận `tradeoff_a`, B nhận `tradeoff_b`.
 
+Phần còn lại của cảnh báo lấy nguyên từ AlertDraft (Mục 5):
+- `causes` ← lưu JSON **đủ dạng có số lượng** như AlertDraft, ví dụ
+  `[{"code": "EXPIRING_LOT", "qty": 6.0}, {"code": "PREORDER", "qty": 3.0}, {"code": "DAILY_USAGE", "qty": 3.0}]`.
+  Không lưu dạng chỉ có mã `["EXPIRING_LOT", ...]`, vì Tab 2 cần hiện số lượng của từng nguyên nhân.
+  Mã OPEN_PO, SUPPLIER_DELAY nếu không có số lượng thì để `"qty": null`.
+- `main_cause`, `projected_stock`, `shortage_qty`, `snapshot_hash` ← lấy đúng giá trị cùng tên trong AlertDraft.
+
 ## 11. Hàm cho giao diện – `services/ui_api.py` (Yến) và stubs
 
 `app.py` **chỉ import `services/ui_api.py`**. File này gom các hàm giao diện cần, gọi hàm thật ở các module khác và
