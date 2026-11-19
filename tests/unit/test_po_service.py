@@ -181,7 +181,7 @@ def test_send_po_xuat_csv_va_chuyen_sent(db, tmp_path):
     po = repository.get_purchase_order(po_id)
     assert (po["status"], po["delivery_status"], po["sent_by"], po["send_attempts"]) == \
         ("SENT", "PENDING", "Duyên", 1)
-    assert po["expected_delivery_date"] == "2026-11-21T08:00:00"   # NCC Chính giao 24h
+    assert po["expected_delivery_date"] == "2026-11-21"   # NCC Chính giao 24h; cột chỉ có ngày
     assert repository.get_alert(alert_id)["status"] == "RESOLVED"
     assert len(logs("PO_SENT")) == 1
 

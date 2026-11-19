@@ -158,7 +158,7 @@ def dismiss_alert(alert_id: int, user) -> None  # quản lý bấm "Bỏ qua": c
 - Bị chặn → không ghi gì, raise `GuardrailError`, ghi `GUARDRAIL_BLOCKED`. Riêng gửi thất bại: PO vẫn APPROVED,
   tăng `send_attempts`, lưu `last_send_error`, ghi `PO_SEND_FAILED`, rồi raise `GuardrailError("SEND_FAILED")`.
 - `send_po` đặt `delivery_status = PENDING`, `expected_delivery_date = sent_at + lead_time_hours`
-  (dạng `YYYY-MM-DDTHH:MM:SS`); file `outbox/PO-xxx.csv` (UTF-8 có BOM để Excel đọc đúng tiếng Việt).
+  (**chỉ có ngày** `YYYY-MM-DD`, như Mục 0); file `outbox/PO-xxx.csv` (UTF-8 có BOM để Excel đọc đúng tiếng Việt).
 - Cảnh báo của PO → RESOLVED khi PO SENT, REJECTED hoặc CANCELLED.
 - `mark_received` chỉ nhận một lần đủ số lượng còn lại (khác → `QTY_INVALID`), gọi
   `inventory_service.receive_batch(po_id, qty, expiry_date)` để tạo lô. **`receive_batch` ghi `BATCH_RECEIVED`**,

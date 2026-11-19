@@ -356,8 +356,8 @@ def send_po(po_id: str, user) -> str:
         elif not (supplier["contact_email"] or "").strip():
             error = f"NCC {supplier['name']} chưa có email liên hệ (contact_email trống)."
         else:
-            expected_at = (now_dt + timedelta(hours=int(supplier["lead_time_hours"]))).isoformat(
-                timespec="seconds")
+            # Cột chỉ có ngày (contracts Mục 0): YYYY-MM-DD
+            expected_at = (now_dt + timedelta(hours=int(supplier["lead_time_hours"]))).date().isoformat()
             try:
                 path = _write_po_file(po, supplier, ingredient, expected_at, user)
             except OSError as exc:
