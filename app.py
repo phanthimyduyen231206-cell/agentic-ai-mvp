@@ -7,6 +7,7 @@ Nguyên tắc: file này CHỈ nhận thao tác và hiển thị, KHÔNG chứa 
 lấy qua services/ui_api.py (contracts Mục 11). Chạy data/init_db.py trước lần đầu.
 """
 import hmac
+import json
 import math
 import os
 import re
@@ -20,6 +21,40 @@ import streamlit as st
 from services import ui_api as api
 
 st.set_page_config(page_title="Trợ lý cung ứng tiệm bánh", page_icon="🥐", layout="wide")
+
+# Font Be Vietnam Pro (dấu tiếng Việt đẹp) + vài chỉnh nhỏ cho đồng bộ màu với .streamlit/config.toml.
+# Không có mạng thì trình duyệt tự dùng font mặc định, app vẫn chạy bình thường.
+st.markdown("""
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Be+Vietnam+Pro:wght@400;500;600;700&display=swap');
+.stApp, .stApp p, .stApp li, .stApp label, .stApp input, .stApp textarea, .stApp button,
+.stApp h1, .stApp h2, .stApp h3, .stApp h4, [data-testid="stMetricValue"], [data-testid="stMetricLabel"] {
+    font-family: 'Be Vietnam Pro', sans-serif;
+}
+.stApp h1 { color: #7C2D12; font-weight: 700; }
+.stApp h2, .stApp h3 { color: #7C2D12; font-weight: 600; }
+[data-testid="stMetricValue"] { color: #B45309; font-weight: 700; }
+[data-testid="stVerticalBlockBorderWrapper"] { border-radius: 14px; }
+.stButton button, .stFormSubmitButton button { border-radius: 10px; font-weight: 600; }
+button[data-baseweb="tab"] p, [data-testid="stTab"] p { font-size: 1rem; font-weight: 600; }
+/* Bảng HTML (show_table): tiêu đề căn giữa, đứng yên khi cuộn */
+.bk-table { overflow: auto; border: 1px solid #EADBC8; border-radius: 12px; margin-bottom: 1rem; background: #FFFFFF; }
+.bk-table table { width: 100%; border-collapse: collapse; font-size: 0.92rem; }
+.bk-table thead th { position: sticky; top: 0; z-index: 1; background: #F5EBDD; color: #7C2D12;
+    font-weight: 600; text-align: center !important; padding: 10px 12px; border-bottom: 1px solid #E2CDB4; }
+.bk-table td { text-align: center; padding: 8px 12px; border-bottom: 1px solid #F3E8DA; vertical-align: middle;
+    white-space: nowrap; }
+.bk-table tbody tr:last-child td { border-bottom: none; }
+/* Banner: chữ và con số nằm giữa từng ô */
+[data-testid="stMetric"] { text-align: center; }
+[data-testid="stMetricLabel"], [data-testid="stMetricValue"] { display: flex; justify-content: center; }
+/* 4 tab chia đều chiều ngang (bản Streamlit mới: role="tab"; bản cũ: data-baseweb="tab") */
+[data-testid="stTabs"] [role="tablist"], div[data-baseweb="tab-list"] { width: 100%; gap: 0; }
+[data-testid="stTabs"] [data-testid="stTab"], div[data-baseweb="tab-list"] button[data-baseweb="tab"] {
+    flex: 1 1 0; justify-content: center; }
+[data-testid="stTab"][data-focus-visible] { box-shadow: none; }
+</style>
+""", unsafe_allow_html=True)
 
 CAUSE_LABELS = {
     "PREORDER": "Đơn đặt trước",
@@ -175,7 +210,8 @@ def render_banner():
         c2.metric("📝 PO chờ duyệt", n_draft)
         c3.metric("📤 PO chờ gửi", n_approved)
         if n_open or n_draft or n_approved:
-            st.caption("👉 Mở tab «Rà soát 08:00» để xử lý.")
+            st.caption('<div style="text-align:center">👉 Mở tab «Rà soát» để xử lý.</div>',
+                       unsafe_allow_html=True)
 
 
 # ===========================================================================
@@ -201,6 +237,30 @@ def styled_table(df, style_by_prefix):
         return value
 
     return df.style.apply(highlight_rows(style_by_prefix), axis=1).format(_fmt)
+
+
+# Cột chứa câu dài thì để căn trái cho dễ đọc; các cột còn lại căn giữa.
+LEFT_ALIGNED_COLUMNS = {"Nội dung", "Lý do", "Ghi chú", "Lỗi"}
+
+
+def _cell_text(value):
+    return fmt_qty(value) if isinstance(value, float) else value
+
+
+def show_table(data, max_height=None):
+    """Vẽ bảng dạng HTML để căn giữa được cả TIÊU ĐỀ cột (st.dataframe không làm được).
+    data: DataFrame, hoặc Styler đã tô màu hàng (styled_table, log_row_styler).
+    max_height: bảng dài thì cuộn trong khung cao tối đa bấy nhiêu px, tiêu đề đứng yên."""
+    styler = data if not isinstance(data, pd.DataFrame) else data.style
+    columns = list(styler.data.columns)
+    styler = styler.format(_cell_text, escape="html").hide(axis="index")
+    left = [c for c in columns if c in LEFT_ALIGNED_COLUMNS]
+    if left:
+        styler = styler.set_properties(subset=left, **{"text-align": "left", "white-space": "normal",
+                                                      "min-width": "260px"})
+    html = " ".join(line.strip() for line in styler.to_html().splitlines())
+    box = f' style="max-height:{max_height}px"' if max_height else ""
+    st.markdown(f'<div class="bk-table"{box}>{html}</div>', unsafe_allow_html=True)
 
 
 def render_tab1(user):
@@ -230,7 +290,7 @@ def render_tab1(user):
             "Tình trạng": "⚠️ THIẾU" if short else "✅ Đủ",
         })
     df = pd.DataFrame(summary_rows)
-    st.dataframe(styled_table(df, ("Tình trạng", "⚠️", RED_STYLE)), hide_index=True)
+    show_table(styled_table(df, ("Tình trạng", "⚠️", RED_STYLE)))
 
     # ---- 2. Bảng lô theo FEFO ---------------------------------------------
     st.subheader("2. Tồn theo lô (FEFO: hạn sớm nhất ở trên)")
@@ -255,8 +315,7 @@ def render_tab1(user):
                 "Ghi chú": f"⚠️ {fmt_qty(exp_qty)} {ing['unit']} sẽ hết hạn trước khi kịp dùng" if exp_qty else "",
             })
     if lot_rows:
-        st.dataframe(styled_table(pd.DataFrame(lot_rows), ("Ghi chú", "⚠️", RED_STYLE)),
-                     hide_index=True)
+        show_table(styled_table(pd.DataFrame(lot_rows), ("Ghi chú", "⚠️", RED_STYLE)), max_height=460)
     else:
         st.info("Không có lô nào còn hạn.")
 
@@ -265,7 +324,7 @@ def render_tab1(user):
     pre_rows = [{"Mã đơn": p["order_id"], "Bánh": p["cake_name"], "Số lượng": p["quantity"],
                  "Ngày giao": fmt_date(p["delivery_date"])}
                 for p in sorted(api.list_preorders(), key=lambda p: p["delivery_date"])]
-    st.dataframe(pd.DataFrame(pre_rows), hide_index=True)
+    show_table(pd.DataFrame(pre_rows))
 
     # ---- 4. Xuất kho ---------------------------------------------------------
     st.subheader("4. Xuất kho (tự trừ theo FEFO)")
@@ -311,8 +370,7 @@ def render_po_list_and_receive(ing_by_id, now, user):
                 "Dự kiến giao": fmt_date(p["expected_delivery_date"]),
                 "Đóng (closed_reason)": p["closed_reason"] or "—",
             })
-        st.dataframe(styled_table(pd.DataFrame(po_rows), ("delivery_status", "DELAYED", ORANGE_STYLE)),
-                     hide_index=True)
+        show_table(styled_table(pd.DataFrame(po_rows), ("delivery_status", "DELAYED", ORANGE_STYLE)))
     else:
         st.info("Chưa có PO nào.")
 
@@ -402,7 +460,7 @@ def render_options_table(alert):
             "Kịp đơn sớm nhất?": "✅ Kịp" if o["meets_earliest_preorder"] else "❌ Không kịp",
             "Chênh lệch so với A": f"{o['cost_diff_pct_vs_A']:g}%", "Lý do": pretty_text(o["reason"]),
         })
-    st.dataframe(pd.DataFrame(rows), hide_index=True)
+    show_table(pd.DataFrame(rows))
 
 
 def render_choice_form(alert, user):
@@ -589,41 +647,181 @@ def render_tab3(user):
         st.rerun()
 
 
+# ---- Tab 4: đổi nhật ký thô sang câu dễ đọc (chỉ để hiển thị) -------------------
+EVENT_LABELS = {
+    "RUN_STARTED": "▶️ Bắt đầu rà soát", "RUN_SUCCEEDED": "✅ Rà soát xong",
+    "RUN_FAILED": "❌ Rà soát lỗi", "RUN_REJECTED_DUPLICATE": "⚠️ Chặn chạy trùng",
+    "ALERT_CREATED": "🔔 Tạo cảnh báo", "OPTION_SELECTED": "👉 Chọn phương án",
+    "ALERT_DISMISSED": "🚫 Bỏ qua cảnh báo", "PO_CREATED": "📝 Tạo PO nháp",
+    "PO_APPROVED": "✅ Duyệt PO", "PO_REJECTED": "❌ Từ chối PO", "PO_CANCELLED": "🗑 Hủy PO",
+    "PO_SEND_FAILED": "❌ Gửi PO thất bại", "PO_SENT": "📤 Gửi PO",
+    "DELIVERY_DELAYED": "⚠️ Giao trễ", "DELIVERY_RECEIVED": "📥 Nhận hàng",
+    "BATCH_RECEIVED": "📦 Nhập lô mới", "STOCK_ISSUED": "📤 Xuất kho",
+    "GUARDRAIL_BLOCKED": "⛔ Bị chặn", "CHAT_ANSWERED": "💬 Chat trả lời",
+    "CHAT_REFUSED": "⚠️ Chat từ chối",
+}
+RED_EVENTS = {"RUN_FAILED", "PO_SEND_FAILED", "GUARDRAIL_BLOCKED"}
+ORANGE_EVENTS = {"RUN_REJECTED_DUPLICATE", "DELIVERY_DELAYED", "CHAT_REFUSED"}
+ACTION_LABELS = {
+    "create_draft_po": "tạo PO", "approve_po": "duyệt PO", "reject_po": "từ chối PO",
+    "cancel_po": "hủy PO", "send_po": "gửi PO", "mark_received": "nhận hàng",
+    "dismiss_alert": "bỏ qua cảnh báo", "issue_stock_fefo": "xuất kho",
+}
+
+
+def fmt_actor(actor):
+    key = (actor or "").lower()
+    return {"scheduler": "⏰ Lịch 08:00", "system": "⚙️ Hệ thống", "gemini": "🤖 Gemini"}.get(
+        key, f"👤 {actor}")
+
+
+def fmt_entity(log, ing_by_id):
+    kind, eid = log["entity_type"], log["entity_id"]
+    if kind == "alert":
+        return f"Cảnh báo #{eid}"
+    if kind == "audit_run":
+        return f"Phiên #{eid}"
+    if kind == "batch":
+        return f"Lô {eid}"
+    if kind == "ingredient":
+        return ing_by_id.get(eid, {}).get("name", eid)
+    if kind == "chat":
+        return "Chat"
+    return eid or "—"
+
+
+def describe_log(log, ing_by_id, sup_names, po_by_id):
+    """Một câu tiếng Việt ngắn tóm tắt sự kiện, dựng từ detail_json."""
+    try:
+        d = json.loads(log["detail_json"] or "{}")
+    except ValueError:
+        d = {}
+    if not isinstance(d, dict):
+        d = {}
+    ing = ing_by_id.get(d.get("ingredient_id"), {})
+    ing_name, unit = ing.get("name", d.get("ingredient_id", "")), ing.get("unit", "")
+    qty = fmt_qty(d["qty"]) if isinstance(d.get("qty"), (int, float)) else d.get("qty")
+    sup = sup_names.get(d.get("sup_id"), d.get("sup_id"))
+    ev = log["event_type"]
+
+    if ev == "RUN_STARTED":
+        how = "theo lịch 08:00" if d.get("trigger") == "SCHEDULED" else "do quản lý bấm"
+        return f"Rà soát {how}" + (" (chạy lại)" if d.get("rerun") else "")
+    if ev == "RUN_SUCCEEDED":
+        text = f"Có {d.get('alert_count', 0)} cảnh báo"
+        return text + (" · Gemini không phản hồi, dùng câu mẫu" if d.get("fallback") else "")
+    if ev in ("RUN_FAILED", "RUN_REJECTED_DUPLICATE", "PO_SEND_FAILED"):
+        return d.get("error") or d.get("message") or d.get("reason") or ""
+    if ev == "DELIVERY_DELAYED":
+        return f"Hạn giao {fmt_date(d.get('expected_delivery_date'))} đã qua mà chưa nhận hàng"
+    if ev == "ALERT_CREATED":
+        cause = CAUSE_LABELS.get(d.get("main_cause"), d.get("main_cause") or "")
+        return f"{ing_name} thiếu hàng · nguyên nhân chính: {cause}"
+    if ev == "OPTION_SELECTED":
+        return f"Chọn phương án {d.get('option')}: {sup}, số lượng {qty}"
+    if ev == "PO_APPROVED":
+        return "Quản lý đã duyệt, chờ gửi NCC"
+    if ev == "PO_CANCELLED":
+        return "Hủy PO đã duyệt, không gửi NCC"
+    if ev == "ALERT_DISMISSED":
+        return "Quản lý bỏ qua, không đặt hàng"
+    if ev == "PO_CREATED":
+        return f"{ing_name}: {qty} {unit} từ {sup}, tổng {fmt_money(d.get('total_cost') or 0)}"
+    if ev == "PO_REJECTED":
+        return f"Lý do: {d['reason']}" if d.get("reason") else "Không ghi lý do"
+    if ev == "PO_SENT":
+        po = po_by_id.get(log["entity_id"], {})
+        sup_name = po.get("sup_name") or "NCC"
+        file_name = os.path.basename(str(d.get("file") or "")) or "—"
+        return (f"Đã gửi đơn cho {sup_name} · hàng dự kiến về "
+                f"{fmt_date(d.get('expected_delivery_date'))} · file {file_name}")
+    if ev == "STOCK_ISSUED":
+        lots = "; ".join(f"{b['batch_id']} -{fmt_qty(b['taken'])}" for b in d.get("batches", []))
+        return f"Xuất {qty}, trừ lô: {lots}"
+    if ev == "BATCH_RECEIVED":
+        return f"{qty} {unit} {ing_name} từ {d.get('po_id')}, hạn dùng {fmt_dt(d.get('expiry_date'))}"
+    if ev == "DELIVERY_RECEIVED":
+        return f"Nhận {qty}, tạo lô {d.get('batch_id')}"
+    if ev == "GUARDRAIL_BLOCKED":
+        action = ACTION_LABELS.get(d.get("action"), d.get("action") or "thao tác")
+        return f"Chặn khi {action} [{d.get('code')}] · {d.get('message', '')}"
+    if ev == "CHAT_ANSWERED":
+        return f"Hỏi: «{d.get('question', '')}»"
+    if ev == "CHAT_REFUSED":
+        reason = {"EMPTY": "câu hỏi trống", "TOO_LONG": "câu hỏi quá dài"}.get(
+            d.get("reason"), "yêu cầu ghi dữ liệu hoặc ngoài phạm vi")
+        return f"Hỏi: «{d.get('question', '')}» · lý do: {reason}"
+    return ""
+
+
+def as_sentences(text):
+    """'a · b · c' -> 'A. B. C' (mỗi ý thành một câu, viết hoa chữ đầu)."""
+    parts = [p.strip() for p in str(text or "").split(" · ") if p.strip()]
+    return ". ".join(p[0].upper() + p[1:] for p in parts)
+
+
+def log_row_styler(events):
+    """Tô màu từng dòng theo loại sự kiện (events[i] là event_type của dòng i)."""
+    def _apply(row):
+        event = events[row.name]
+        style = RED_STYLE if event in RED_EVENTS else ORANGE_STYLE if event in ORANGE_EVENTS else ""
+        return [style] * len(row)
+    return _apply
+
+
 def render_tab4(user):
     st.subheader("Nhật ký hệ thống")
 
-    st.markdown("**Phiên rà soát (audit_runs)**")
+    st.markdown("**Phiên rà soát**")
     runs = api.get_audit_runs()
     if runs:
         run_rows = [{
-            "Phiên": r["run_id"], "Ngày": fmt_date(r["run_date"]), "Cách chạy": r["trigger"],
-            "Chạy lại": "Có" if r["is_rerun"] else "", "Trạng thái": r["status"],
-            "Bắt đầu": fmt_dt(r["started_at"]), "Kết thúc": fmt_dt(r["finished_at"]),
-            "Số cảnh báo": r["alert_count"], "Lỗi": r["error"] or "",
+            "Phiên": f"#{r['run_id']}", "Ngày": fmt_date(r["run_date"]),
+            "Cách chạy": ("⏰ Lịch 08:00" if r["trigger"] == "SCHEDULED" else "👤 Bấm tay")
+                         + (" · chạy lại" if r["is_rerun"] else ""),
+            "Trạng thái": r["status"], "Bắt đầu": fmt_dt(r["started_at"]),
+            "Kết thúc": fmt_dt(r["finished_at"]), "Số cảnh báo": str(r["alert_count"]),
+            "Lỗi": r["error"] or "",
         } for r in runs]
-        st.dataframe(styled_table(pd.DataFrame(run_rows), ("Trạng thái", "FAILED", RED_STYLE)),
-                     hide_index=True)
+        show_table(styled_table(pd.DataFrame(run_rows), ("Trạng thái", "FAILED", RED_STYLE)))
     else:
         st.info("Chưa có phiên rà soát nào.")
 
-    st.markdown("**Nhật ký sự kiện (audit_logs)**")
-    c1, c2 = st.columns([2, 1])
-    event = c1.selectbox("Lọc theo loại sự kiện (event_type)", ["__ALL__"] + list(api.list_event_types()),
-                         format_func=lambda e: "Tất cả" if e == "__ALL__" else e, key="log_filter")
+    st.markdown("**Nhật ký sự kiện**")
+    c1, c2, c3 = st.columns([3, 1, 1])
+    event = c1.selectbox(
+        "Lọc theo loại sự kiện", ["__ALL__"] + list(api.list_event_types()), key="log_filter",
+        format_func=lambda e: "Tất cả" if e == "__ALL__" else f"{EVENT_LABELS.get(e, e)} ({e})")
     limit = c2.selectbox("Số dòng", [50, 200, 1000], key="log_limit")
+    show_raw = c3.checkbox("Hiện mã kỹ thuật", key="log_raw",
+                           help="Thêm cột event_type và dữ liệu gốc (detail_json).")
     logs = api.get_audit_logs(event_type=None if event == "__ALL__" else event, limit=limit)
     if not logs:
         st.info("Chưa có sự kiện nào.")
         return
-    log_rows = [{
-        "#": str(l["log_id"]), "Thời điểm": fmt_dt(l["created_at"]), "Người/hệ thống": l["actor"],
-        "event_type": l["event_type"], "Đối tượng": l["entity_type"] or "",
-        "Mã": "" if l["entity_id"] is None else str(l["entity_id"]),
-        "Phiên": "" if l["run_id"] is None else str(l["run_id"]), "Chi tiết": l["detail_json"] or "",
-    } for l in logs]
-    st.caption("Dòng ĐỎ = thao tác bị guardrail chặn (GUARDRAIL_BLOCKED).")
-    st.dataframe(styled_table(pd.DataFrame(log_rows), ("event_type", "GUARDRAIL", RED_STYLE)),
-                 hide_index=True)
+
+    ing_by_id = {i["id"]: i for i in api.get_ingredients()}
+    po_by_id = {p["po_id"]: p for p in api.list_pos()}
+    sup_names = {p["sup_id"]: p["sup_name"] for p in po_by_id.values()}
+    for ing_id in ing_by_id:
+        for s_row in api.get_suppliers(ing_id):
+            sup_names.setdefault(s_row["sup_id"], s_row["name"])
+
+    rows = []
+    for log in logs:
+        row = {
+            "Thời điểm": fmt_dt(log["created_at"]), "Ai thực hiện": fmt_actor(log["actor"]),
+            "Sự kiện": EVENT_LABELS.get(log["event_type"], log["event_type"]),
+            "Đối tượng": fmt_entity(log, ing_by_id),
+            "Nội dung": as_sentences(pretty_text(describe_log(log, ing_by_id, sup_names, po_by_id))),
+        }
+        if show_raw:
+            row["event_type"] = log["event_type"]
+            row["detail_json"] = log["detail_json"] or ""
+        rows.append(row)
+    df = pd.DataFrame(rows)
+    st.caption("Mới nhất ở trên. Dòng ĐỎ = bị chặn hoặc lỗi; dòng CAM = cần chú ý (giao trễ, chat từ chối, chạy trùng).")
+    show_table(df.style.apply(log_row_styler([log["event_type"] for log in logs]), axis=1), max_height=520)
 
 
 @st.cache_resource
@@ -643,7 +841,7 @@ def main():
     st.title("🥐 Trợ lý cung ứng nguyên vật liệu - Tiệm bánh")
     render_banner()
     tab1, tab2, tab3, tab4 = st.tabs(
-        ["📦 Kho & Đơn đặt trước", "🔎 Rà soát 08:00", "💬 Hỏi đáp tồn kho", "📜 Nhật ký hệ thống"])
+        ["📦 Kho & Đơn đặt trước", "🔎 Rà soát", "💬 Hỏi đáp tồn kho", "📜 Nhật ký hệ thống"])
     with tab1:
         render_tab1(user)
     with tab2:
