@@ -1,62 +1,29 @@
 """services/ui_api.py - "Ổ chia" giữa giao diện và backend (Yến, contracts Mục 11).
 
 app.py CHỈ import file này. File này:
-  1. chọn nguồn: hàm giả (services/stubs.py) hoặc hàm thật (repository, po_service...);
+  1. gọi hàm thật ở repository, clock, fefo, po_service, inventory_service,
+     audit_service, chat_service;
   2. đổi dữ liệu thô của DB sang dạng dễ hiển thị: giải mã chuỗi JSON (`causes`,
      `options_json`), lấy đánh đổi A/B từ `options[].tradeoff`, ghép tên nguyên liệu,
      đơn vị, mức tối thiểu và tên NCC.
-Phần (2) dùng chung cho cả hàm giả lẫn hàm thật, vì stubs.py trả dữ liệu cùng dạng với DB.
 
-Không chứa luật nghiệp vụ: kiểm tra quyền, MOQ, trạng thái PO... đều do hàm ghi tự làm.
-
-Từ việc Y03: DUNG_HAM_GIA = False, tức là dùng hàm thật và data/bakery.db.
-Muốn quay lại hàm giả để thử giao diện thì đổi thành True. Hàm thật nào chưa có
-thì giao diện báo "chưa có" thay vì sập. Y09 xóa stubs.py và nhánh hàm giả.
+Không chứa luật nghiệp vụ: kiểm tra quyền, MOQ, trạng thái PO, chống chạy trùng...
+đều do hàm ghi tự làm. (Từ Y09 không còn hàm giả services/stubs.py.)
 """
 from __future__ import annotations
 
 import json
 
-# ===========================================================================
-# CÔNG TẮC NGUỒN DỮ LIỆU
-#   True  = dùng hàm giả trong services/stubs.py (dữ liệu trong bộ nhớ)
-#   False = dùng hàm thật và database data/bakery.db (chạy data/init_db.py trước)
-# ===========================================================================
-DUNG_HAM_GIA = False
-
-if DUNG_HAM_GIA:
-    from services import stubs as _repo
-    from services import stubs as _fefo
-    from services import stubs as _po
-    from services import stubs as _clock
-    from services import stubs as _inventory
-    from services import stubs as _audit
-    from services import stubs as _chat
-else:
-    import importlib
-
-    from data import repository as _repo
-    from services import clock as _clock
-    from services import fefo as _fefo
-    from services import po_service as _po
-
-    def _module(name):
-        """Import muộn: module chưa xong hoặc thiếu thư viện thì trả None, không làm sập app."""
-        try:
-            return importlib.import_module(name)
-        except Exception:  # noqa: BLE001
-            return None
-
-    _inventory = _module("services.inventory_service")
-    _audit = _module("services.audit_service")
-    _chat = _module("services.chat_service")
+from data import repository as _repo
+from services import audit_service as _audit
+from services import chat_service as _chat
+from services import clock as _clock
+from services import fefo as _fefo
+from services import inventory_service as _inventory
+from services import po_service as _po
+from services.audit_log import EVENT_TYPES
 
 GuardrailError = _po.GuardrailError
-
-
-def _missing(module, func_name):
-    """Lấy hàm từ module; chưa có thì trả None."""
-    return getattr(module, func_name, None) if module is not None else None
 
 
 # ---------------------------------------------------------------------------
@@ -166,17 +133,20 @@ def get_audit_runs(run_date=None, status=None) -> list[dict]:
 
 
 def get_audit_logs(event_type=None, limit=None) -> list[dict]:
+    """Nhật ký mới nhất trước. event_type=None là lấy mọi loại."""
     return _repo.get_audit_logs(event_type=event_type, limit=limit)
+
+
+def list_event_types() -> tuple[str, ...]:
+    """Danh sách loại sự kiện (Mục 7) cho ô lọc ở Tab 4."""
+    return EVENT_TYPES
 
 
 # ---------------------------------------------------------------------------
 # Thao tác ghi (chuyển thẳng sang hàm thật; hàm ghi tự kiểm tra guardrail)
 # ---------------------------------------------------------------------------
 def issue_stock_fefo(ingredient_id, qty: float, user) -> list[dict]:
-    func = _missing(_inventory, "issue_stock_fefo")
-    if func is None:
-        raise GuardrailError("NOT_READY", "Chức năng xuất kho (inventory_service, P04) chưa có.")
-    return func(ingredient_id, qty, user)
+    return _inventory.issue_stock_fefo(ingredient_id, qty, user)
 
 
 def create_draft_po(alert_id: int, option: str, qty: float, user) -> str:
@@ -200,8 +170,6 @@ def send_po(po_id: str, user) -> str:
 
 
 def mark_received(po_id: str, qty: float, user, expiry_date=None) -> str:
-    if not DUNG_HAM_GIA and _missing(_inventory, "receive_batch") is None:
-        raise GuardrailError("NOT_READY", "Chức năng nhận hàng cần inventory_service (P04), hiện chưa có.")
     return _po.mark_received(po_id, qty, user, expiry_date)
 
 
@@ -210,23 +178,13 @@ def dismiss_alert(alert_id: int, user) -> None:
 
 
 def run_morning_audit(trigger: str, rerun: bool = False, user=None) -> dict:
-    func = _missing(_audit, "run_morning_audit")
-    if func is None:
-        return {"run_id": None, "status": "FAILED", "alert_ids": [],
-                "message": "Chức năng rà soát (audit_service, M05) chưa có."}
-    return func(trigger, rerun=rerun, user=user)
+    return _audit.run_morning_audit(trigger, rerun=rerun, user=user)
+
+
+def recover_stale_runs() -> list[int]:
+    """Gọi khi app khởi động: phiên RUNNING bị bỏ dở quá lâu -> FAILED."""
+    return _audit.recover_stale_runs()
 
 
 def ask_chat(question: str, user) -> dict:
-    func = _missing(_chat, "ask_chat")
-    if func is None:
-        return {"answer": "Chức năng hỏi đáp (chat_service) chưa chạy được.", "refused": True}
-    return func(question, user)
-
-
-# ---------------------------------------------------------------------------
-# Chỉ dùng khi phát triển (nút Reset ở thanh bên). Hàm thật không có.
-# ---------------------------------------------------------------------------
-def reset(scenario: str = "with_alerts") -> None:
-    if DUNG_HAM_GIA:
-        _repo.reset(scenario)
+    return _chat.ask_chat(question, user)
