@@ -4,62 +4,21 @@ Chạy:  streamlit run app.py
 
 Nguyên tắc: file này CHỈ nhận thao tác và hiển thị, KHÔNG chứa luật nghiệp vụ
 (tính tồn, chọn A/B, kiểm tra quyền... đều do services/ làm). Mọi hàm backend
-được lấy qua "ổ chia" `api` ngay bên dưới. Hiện tất cả đang trỏ về HÀM GIẢ
-trong services/stubs.py. Ở việc Y03/Y09 chỉ sửa khối "ổ chia" này, phần còn
-lại của file giữ nguyên.
+lấy qua services/ui_api.py (contracts Mục 11); đổi hàm giả <-> hàm thật bằng
+công tắc DUNG_HAM_GIA trong ui_api.py, không sửa file này.
 """
 import hmac
 import math
 import os
 from datetime import date, datetime, timedelta
 from datetime import time as dtime
-from types import SimpleNamespace
 
 import pandas as pd
 import streamlit as st
 
-# ===========================================================================
-# Ổ CHIA: nơi DUY NHẤT nối giao diện với backend
-# ---------------------------------------------------------------------------
-# Hiện mọi hàm trỏ về hàm giả (_fake). Khi hàm thật của ai đã merge vào main,
-# thêm dòng import module đó rồi đổi đúng các dòng có ghi tên người đó, ví dụ:
-#     from services import po_service
-#     create_draft_po=po_service.create_draft_po,
-# Y03: đổi nhóm Duyên (po_service) và Phương Anh (inventory_service, repository).
-# Y09: đổi nốt nhóm còn lại, xóa dòng `reset`, xóa import _fake và stubs.py.
-# ===========================================================================
-from services import stubs as _fake
-
-api = SimpleNamespace(
-    # --- services/clock.py (Duyên, D03) ---
-    now=_fake.now,
-    # --- data/repository.py (Phương Anh, P03) ---
-    list_ingredients=_fake.list_ingredients,
-    get_batches_fefo=_fake.get_batches_fefo,
-    get_suppliers=_fake.get_suppliers,
-    # --- services/fefo.py (Quỳnh Anh, Q01) ---
-    fefo_projection=_fake.fefo_projection,
-    # --- services/inventory_service.py (Phương Anh, P04) ---
-    issue_stock_fefo=_fake.issue_stock_fefo,
-    # --- services/po_service.py (Duyên, D05) ---
-    GuardrailError=_fake.GuardrailError,
-    create_draft_po=_fake.create_draft_po,
-    approve_po=_fake.approve_po,
-    reject_po=_fake.reject_po,
-    cancel_po=_fake.cancel_po,
-    send_po=_fake.send_po,
-    mark_received=_fake.mark_received,
-    # --- services/audit_service.py (Mai Anh, M05) ---
-    run_morning_audit=_fake.run_morning_audit,
-    # --- CHƯA CÓ TRONG CONTRACTS: chờ nhóm chốt ai làm ---
-    list_preorders=_fake.list_preorders,
-    list_pos=_fake.list_pos,
-    list_alerts=_fake.list_alerts,
-    get_today_run=_fake.get_today_run,
-    dismiss_alert=_fake.dismiss_alert,
-    # --- Chỉ dùng khi phát triển (nút Reset ở thanh bên), XÓA ở Y09 ---
-    reset=_fake.reset,
-)
+# Mọi hàm backend lấy qua services/ui_api.py (contracts Mục 11). Muốn đổi giữa
+# hàm giả và hàm thật thì sửa công tắc DUNG_HAM_GIA trong ui_api.py, KHÔNG sửa file này.
+from services import ui_api as api
 
 st.set_page_config(page_title="Trợ lý cung ứng tiệm bánh", page_icon="🥐", layout="wide")
 
@@ -146,6 +105,14 @@ def run_action(tab, action, ok_message):
     st.rerun()
 
 
+def is_manager(user):
+    """Chỉ để ẩn/hiện nút cho gọn. Quyền thật do hàm ghi kiểm tra (NOT_MANAGER)."""
+    return user.get("role") == "MANAGER"
+
+
+MANAGER_ONLY_NOTE = "🔒 Chỉ quản lý (MANAGER) mới thao tác được ở đây."
+
+
 # ===========================================================================
 # Đăng nhập, thanh bên, banner
 # ===========================================================================
@@ -179,16 +146,17 @@ def render_sidebar(user):
         if st.button("Đăng xuất"):
             st.session_state.clear()
             st.rerun()
-        with st.expander("🛠 Công cụ dev (hàm giả)"):
-            st.caption("Chỉ dùng khi phát triển, sẽ bỏ ở việc Y09.")
-            if st.button("Reset: đã rà soát 08:00 (4 cảnh báo)", key="reset_alerts"):
-                api.reset("with_alerts")
-                st.session_state.pop("flash", None)
-                st.rerun()
-            if st.button("Reset: hôm nay chưa rà soát", key="reset_norun"):
-                api.reset("no_run")
-                st.session_state.pop("flash", None)
-                st.rerun()
+        if api.DUNG_HAM_GIA:
+            with st.expander("🛠 Công cụ dev (hàm giả)"):
+                st.caption("Chỉ hiện khi dùng hàm giả, sẽ bỏ ở việc Y09.")
+                if st.button("Reset: đã rà soát 08:00 (4 cảnh báo)", key="reset_alerts"):
+                    api.reset("with_alerts")
+                    st.session_state.pop("flash", None)
+                    st.rerun()
+                if st.button("Reset: hôm nay chưa rà soát", key="reset_norun"):
+                    api.reset("no_run")
+                    st.session_state.pop("flash", None)
+                    st.rerun()
 
 
 def render_banner():
@@ -234,7 +202,7 @@ def styled_table(df, style_by_prefix):
 def render_tab1(user):
     show_flash("tab1")
     now = api.now()
-    ingredients = api.list_ingredients()
+    ingredients = api.get_ingredients()
     ing_by_id = {i["id"]: i for i in ingredients}
 
     # ---- 1. Tồn theo nguyên liệu + projected_stock so với min_stock -------
@@ -336,7 +304,9 @@ def render_tab1(user):
     # ---- 6. Nhận hàng ---------------------------------------------------------
     st.subheader("6. Xác nhận đã nhận hàng")
     receivable = [p for p in pos if p["status"] == "SENT" and p["delivery_status"] in ("PENDING", "DELAYED")]
-    if not receivable:
+    if not is_manager(user):
+        st.caption(MANAGER_ONLY_NOTE)
+    elif not receivable:
         st.info("Không có PO nào đang chờ giao.")
     else:
         po_by_id = {p["po_id"]: p for p in receivable}
@@ -480,7 +450,9 @@ def render_alert_card(alert, user):
                 st.markdown(f"- **Đánh đổi B:** {alert['tradeoff_b']}")
 
         status = alert["status"]
-        if status == "OPEN" and alert["options"]:
+        if status == "OPEN" and not is_manager(user):
+            st.caption(MANAGER_ONLY_NOTE)
+        elif status == "OPEN" and alert["options"]:
             render_choice_form(alert, user)
         elif status == "OPEN":
             if st.button("🚫 Bỏ qua cảnh báo", key=f"dismiss_{alert['alert_id']}"):
@@ -505,7 +477,9 @@ def render_po_card(po, ing_by_id, user):
             if po.get("last_send_error"):
                 st.error(f"Gửi thất bại (lần {po['send_attempts']}): {po['last_send_error']}")
         with right:
-            if po["status"] == "DRAFT":
+            if not is_manager(user):
+                st.caption(MANAGER_ONLY_NOTE)
+            elif po["status"] == "DRAFT":
                 reason = st.text_input("Lý do từ chối (không bắt buộc)", key=f"reason_{pid}")
                 b1, b2 = st.columns(2)
                 if b1.button("✅ Duyệt", type="primary", key=f"approve_{pid}"):
@@ -524,7 +498,7 @@ def render_po_card(po, ing_by_id, user):
 
 def render_tab2(user):
     show_flash("tab2")
-    ing_by_id = {i["id"]: i for i in api.list_ingredients()}
+    ing_by_id = {i["id"]: i for i in api.get_ingredients()}
     render_run_block(user)
 
     st.divider()
