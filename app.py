@@ -372,6 +372,9 @@ def render_run_block(user):
             st.error(run["error"])
     else:
         st.info("Hôm nay chưa chạy rà soát. Bấm nút bên dưới để chạy.")
+    if not is_manager(user):
+        st.caption(MANAGER_ONLY_NOTE)
+        return
     rerun = st.checkbox("Chạy lại (rà soát thêm lần nữa trong ngày)", key="rerun_flag") if run else False
     if st.button("▶️ Chạy rà soát", type="primary", key="btn_run_audit"):
         with st.spinner("Đang rà soát..."):
