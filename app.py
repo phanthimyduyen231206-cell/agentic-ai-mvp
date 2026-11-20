@@ -521,7 +521,7 @@ def render_tab2(user):
     st.subheader("Cảnh báo")
     alerts = api.list_alerts()
     if not alerts:
-        st.info("Chưa có cảnh báo nào. Hãy chạy rà soát.")
+        st.info("Chưa có cảnh báo nào. Hãy chạy rà soát." if is_manager(user) else "Chưa có cảnh báo nào.")
     pending = [a for a in alerts if a["status"] in ("OPEN", "SELECTED")]
     finished = [a for a in alerts if a["status"] in ("RESOLVED", "DISMISSED")]
     for alert in pending:
