@@ -116,13 +116,14 @@ def load_default_tools() -> dict[str, Callable[..., Any]]:
     return {**FAKE_TOOLS, **tools}
 
 
-# Tool giả: dữ liệu theo data/expected.md (DEMO_DATE=2026-11-20T08:00). Mỗi kết quả có "_fake": True.
+# Tool giả: dữ liệu theo data/expected.md (DEMO_DATE=2026-11-20T08:00), tên trường theo contracts mục 6
+# (on_hand_qty, ok). Mỗi kết quả có "_fake": True.
 _FAKE_STOCK = {
     "KEM_TUOI": {
         "ingredient_id": "KEM_TUOI", "ingredient_name": "Kem tươi Whipping Cream", "unit": "lít",
         "batches": [
             {"batch_id": "KEM-L1", "qty": 7.0, "expiry_date": "2026-11-20T20:00:00"},
-            {"batch_id": "KEM-L2", "qty": 3.0, "expiry_date": "2026-11-25T08:00:00"},
+            {"batch_id": "KEM-L2", "qty": 3.0, "expiry_date": "2026-11-25T20:00:00"},
         ],
     },
     "BO_LAT": {
@@ -139,13 +140,14 @@ def _fake_unknown(ingredient_id: str | None) -> dict:
 
 def _fake_check_inventory_fefo(ingredient_id: str | None = None, at: str | None = None, days: int = 0) -> dict:
     if ingredient_id is None:
-        return {"items": [{"ingredient_id": k, "unit": v["unit"],
-                           "total_qty": sum(b["qty"] for b in v["batches"])} for k, v in _FAKE_STOCK.items()],
+        return {"ok": True, "items": [{"ingredient_id": k, "ingredient_name": v["ingredient_name"], "unit": v["unit"],
+                                       "on_hand_qty": sum(b["qty"] for b in v["batches"])}
+                                      for k, v in _FAKE_STOCK.items()],
                 "_fake": True}
     data = _FAKE_STOCK.get(ingredient_id)
     if data is None:
         return _fake_unknown(ingredient_id)
-    return {**data, "total_qty": sum(b["qty"] for b in data["batches"]), "_fake": True}
+    return {"ok": True, **data, "on_hand_qty": sum(b["qty"] for b in data["batches"]), "_fake": True}
 
 
 def _fake_calc_preorder_demand(ingredient_id: str | None = None, days: int = 3) -> dict:

@@ -66,7 +66,7 @@ MORNING_AUDIT_OUTPUT_EXAMPLE = {
 READ_ONLY_CHAT_OUTPUT_EXAMPLE = {
     "answer": (
         "Kem tươi còn 10.0 lít, xếp theo FEFO: lô KEM-L1 còn 7.0 lít (hết hạn 2026-11-20T20:00:00), "
-        "lô KEM-L2 còn 3.0 lít (hết hạn 2026-11-25T08:00:00). Nên ưu tiên dùng lô KEM-L1."
+        "lô KEM-L2 còn 3.0 lít (hết hạn 2026-11-25T20:00:00). Nên ưu tiên dùng lô KEM-L1."
     ),
     "refused": False,
 }
