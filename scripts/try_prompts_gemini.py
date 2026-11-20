@@ -34,7 +34,7 @@ KEM_TUOI_TOOL_RESULT = {
         "ingredient_id": "KEM_TUOI", "unit": "lít",
         "batches": [
             {"batch_id": "KEM-L1", "qty": 7.0, "expiry_date": "2026-11-20T20:00:00"},
-            {"batch_id": "KEM-L2", "qty": 3.0, "expiry_date": "2026-11-25T08:00:00"},
+            {"batch_id": "KEM-L2", "qty": 3.0, "expiry_date": "2026-11-25T20:00:00"},
         ],
     },
 }
