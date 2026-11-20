@@ -265,6 +265,16 @@ def render_tab1(user):
 
     # ---- 4. Xuất kho ---------------------------------------------------------
     st.subheader("4. Xuất kho (tự trừ theo FEFO)")
+    if not is_manager(user):
+        st.caption(MANAGER_ONLY_NOTE)
+    else:
+        render_issue_form(ingredients, ing_by_id, user)
+
+    # ---- 5. Danh sách PO -----------------------------------------------------
+    render_po_list_and_receive(ing_by_id, now, user)
+
+
+def render_issue_form(ingredients, ing_by_id, user):
     with st.form("form_issue"):
         ing_id = st.selectbox(
             "Nguyên liệu", [i["id"] for i in ingredients],
@@ -280,7 +290,8 @@ def render_tab1(user):
 
         run_action("tab1", lambda: api.issue_stock_fefo(ing_id, float(qty), user), _ok)
 
-    # ---- 5. Danh sách PO -----------------------------------------------------
+
+def render_po_list_and_receive(ing_by_id, now, user):
     st.subheader("5. Danh sách PO")
     st.caption("Hai cột tách riêng: status (vòng đời PO) và delivery_status (giao hàng). DELAYED tô cam.")
     pos = api.list_pos()
@@ -359,8 +370,13 @@ def render_run_block(user):
         st.caption(f"Bắt đầu {fmt_dt(run['started_at'])} · kết thúc {fmt_dt(run['finished_at'])}")
         if run.get("error"):
             st.error(run["error"])
-    else:
+    elif is_manager(user):
         st.info("Hôm nay chưa chạy rà soát. Bấm nút bên dưới để chạy.")
+    else:
+        st.info("Hôm nay chưa chạy rà soát. Quản lý sẽ chạy rà soát hoặc hệ thống tự chạy lúc 08:00.")
+    if not is_manager(user):
+        st.caption(MANAGER_ONLY_NOTE)
+        return
     rerun = st.checkbox("Chạy lại (rà soát thêm lần nữa trong ngày)", key="rerun_flag") if run else False
     if st.button("▶️ Chạy rà soát", type="primary", key="btn_run_audit"):
         with st.spinner("Đang rà soát..."):
@@ -505,7 +521,7 @@ def render_tab2(user):
     st.subheader("Cảnh báo")
     alerts = api.list_alerts()
     if not alerts:
-        st.info("Chưa có cảnh báo nào. Hãy chạy rà soát.")
+        st.info("Chưa có cảnh báo nào. Hãy chạy rà soát." if is_manager(user) else "Chưa có cảnh báo nào.")
     pending = [a for a in alerts if a["status"] in ("OPEN", "SELECTED")]
     finished = [a for a in alerts if a["status"] in ("RESOLVED", "DISMISSED")]
     for alert in pending:
