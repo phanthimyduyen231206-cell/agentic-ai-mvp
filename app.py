@@ -1,23 +1,22 @@
-"""app.py - Giao diện Streamlit 4 tab (việc Y01 + Y02).
+"""app.py - Giao diện Streamlit 4 tab (việc Y01, Y02, Y03, Y09).
 
 Chạy:  streamlit run app.py
 
 Nguyên tắc: file này CHỈ nhận thao tác và hiển thị, KHÔNG chứa luật nghiệp vụ
 (tính tồn, chọn A/B, kiểm tra quyền... đều do services/ làm). Mọi hàm backend
-lấy qua services/ui_api.py (contracts Mục 11); đổi hàm giả <-> hàm thật bằng
-công tắc DUNG_HAM_GIA trong ui_api.py, không sửa file này.
+lấy qua services/ui_api.py (contracts Mục 11). Chạy data/init_db.py trước lần đầu.
 """
 import hmac
 import math
 import os
+import re
 from datetime import date, datetime, timedelta
 from datetime import time as dtime
 
 import pandas as pd
 import streamlit as st
 
-# Mọi hàm backend lấy qua services/ui_api.py (contracts Mục 11). Muốn đổi giữa
-# hàm giả và hàm thật thì sửa công tắc DUNG_HAM_GIA trong ui_api.py, KHÔNG sửa file này.
+# Mọi hàm backend lấy qua services/ui_api.py (contracts Mục 11).
 from services import ui_api as api
 
 st.set_page_config(page_title="Trợ lý cung ứng tiệm bánh", page_icon="🥐", layout="wide")
@@ -76,6 +75,22 @@ def fmt_date(value):
 
 def fmt_money(value):
     return f"{value:,.0f}đ".replace(",", ".")
+
+
+_ISO_DATETIME = re.compile(r"(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})(?::\d{2})?")
+_ISO_DATE = re.compile(r"(?<![\d/])(\d{4})-(\d{2})-(\d{2})(?![\d])")
+_FLOAT_ZERO = re.compile(r"(?<![\d.])(\d+)\.0(?!\d)")
+
+
+def pretty_text(text):
+    """Làm đẹp chữ do Gemini viết, CHỈ để hiển thị (không đổi dữ liệu):
+    2026-11-20T20:00:00 -> 20:00 20/11/2026; 2026-11-21 -> 21/11/2026; 10.0 lít -> 10 lít.
+    Tiền dạng 360.000đ giữ nguyên."""
+    if not text:
+        return text
+    text = _ISO_DATETIME.sub(lambda m: f"{m[4]}:{m[5]} {m[3]}/{m[2]}/{m[1]}", str(text))
+    text = _ISO_DATE.sub(lambda m: f"{m[3]}/{m[2]}/{m[1]}", text)
+    return _FLOAT_ZERO.sub(r"\1", text)
 
 
 def fmt_qty(value):
@@ -146,17 +161,6 @@ def render_sidebar(user):
         if st.button("Đăng xuất"):
             st.session_state.clear()
             st.rerun()
-        if api.DUNG_HAM_GIA:
-            with st.expander("🛠 Công cụ dev (hàm giả)"):
-                st.caption("Chỉ hiện khi dùng hàm giả, sẽ bỏ ở việc Y09.")
-                if st.button("Reset: đã rà soát 08:00 (4 cảnh báo)", key="reset_alerts"):
-                    api.reset("with_alerts")
-                    st.session_state.pop("flash", None)
-                    st.rerun()
-                if st.button("Reset: hôm nay chưa rà soát", key="reset_norun"):
-                    api.reset("no_run")
-                    st.session_state.pop("flash", None)
-                    st.rerun()
 
 
 def render_banner():
@@ -396,7 +400,7 @@ def render_options_table(alert):
             "Số lượng": f"{fmt_qty(o['order_qty'])} {unit}", "Tổng tiền": fmt_money(o["total_cost"]),
             "Thời gian giao": f"{o['lead_time_hours']} giờ", "Hàng về lúc": fmt_dt(o["arrival_at"]),
             "Kịp đơn sớm nhất?": "✅ Kịp" if o["meets_earliest_preorder"] else "❌ Không kịp",
-            "Chênh lệch so với A": f"{o['cost_diff_pct_vs_A']:g}%", "Lý do": o["reason"],
+            "Chênh lệch so với A": f"{o['cost_diff_pct_vs_A']:g}%", "Lý do": pretty_text(o["reason"]),
         })
     st.dataframe(pd.DataFrame(rows), hide_index=True)
 
@@ -449,7 +453,7 @@ def render_alert_card(alert, user):
         st.markdown("\n".join(lines))
 
         if alert.get("explanation"):
-            st.info(f"🤖 **Diễn giải của Gemini:** {alert['explanation']}")
+            st.info(f"🤖 **Diễn giải của Gemini:** {pretty_text(alert['explanation'])}")
 
         if alert.get("open_po_id"):
             st.warning(f"Nguyên liệu này đang có PO chưa xử lý ({alert['open_po_id']}). "
@@ -461,9 +465,9 @@ def render_alert_card(alert, user):
             if alert.get("note"):
                 st.caption(f"ℹ️ {alert['note']}")
             if alert.get("tradeoff_a"):
-                st.markdown(f"- **Đánh đổi A:** {alert['tradeoff_a']}")
+                st.markdown(f"- **Đánh đổi A:** {pretty_text(alert['tradeoff_a'])}")
             if alert.get("tradeoff_b"):
-                st.markdown(f"- **Đánh đổi B:** {alert['tradeoff_b']}")
+                st.markdown(f"- **Đánh đổi B:** {pretty_text(alert['tradeoff_b'])}")
 
         status = alert["status"]
         if status == "OPEN" and not is_manager(user):
@@ -546,18 +550,91 @@ def render_tab2(user):
 # ===========================================================================
 # ====== TAB 3, TAB 4 VÀ HÀM MAIN ======
 # ===========================================================================
+CHAT_EXAMPLES = [
+    "Kem tươi còn bao nhiêu và lô nào sắp hết hạn?",
+    "3 ngày tới cần bao nhiêu bơ cho đơn đặt trước?",
+    "PO nào đang giao trễ?",
+]
+
+
 def render_tab3(user):
     st.subheader("Hỏi đáp tồn kho (chỉ đọc)")
-    st.info("Tab này sẽ được nối với chat_service ở việc Y09.")
+    st.caption("Hỏi về tồn kho, lô hàng, đơn đặt trước, NCC, PO. Khung chat chỉ xem số liệu, "
+               "không tạo hay sửa PO được. Tối đa 500 ký tự.")
+    st.caption("Ví dụ: " + " · ".join(f"«{q}»" for q in CHAT_EXAMPLES))
+
+    history = st.session_state.setdefault("chat_history", [])
+    for item in history:
+        with st.chat_message("user"):
+            st.markdown(item["question"])
+        with st.chat_message("assistant"):
+            if item["refused"]:
+                st.warning(pretty_text(item["answer"]))
+            else:
+                st.markdown(pretty_text(item["answer"]))
+
+    with st.form("chat_form", clear_on_submit=True):
+        question = st.text_input("Câu hỏi của bạn", max_chars=500, key="chat_question")
+        c1, c2 = st.columns([1, 5])
+        asked = c1.form_submit_button("💬 Hỏi", type="primary")
+        cleared = c2.form_submit_button("🧹 Xóa lịch sử")
+    if cleared:
+        st.session_state["chat_history"] = []
+        st.rerun()
+    if asked and question.strip():
+        with st.spinner("Đang tra cứu..."):
+            result = api.ask_chat(question, user)
+        history.append({"question": question.strip(), "answer": result["answer"],
+                        "refused": result["refused"]})
+        st.rerun()
 
 
 def render_tab4(user):
     st.subheader("Nhật ký hệ thống")
-    st.info("Tab này sẽ hiện bảng audit_runs và audit_logs ở việc Y09.")
+
+    st.markdown("**Phiên rà soát (audit_runs)**")
+    runs = api.get_audit_runs()
+    if runs:
+        run_rows = [{
+            "Phiên": r["run_id"], "Ngày": fmt_date(r["run_date"]), "Cách chạy": r["trigger"],
+            "Chạy lại": "Có" if r["is_rerun"] else "", "Trạng thái": r["status"],
+            "Bắt đầu": fmt_dt(r["started_at"]), "Kết thúc": fmt_dt(r["finished_at"]),
+            "Số cảnh báo": r["alert_count"], "Lỗi": r["error"] or "",
+        } for r in runs]
+        st.dataframe(styled_table(pd.DataFrame(run_rows), ("Trạng thái", "FAILED", RED_STYLE)),
+                     hide_index=True)
+    else:
+        st.info("Chưa có phiên rà soát nào.")
+
+    st.markdown("**Nhật ký sự kiện (audit_logs)**")
+    c1, c2 = st.columns([2, 1])
+    event = c1.selectbox("Lọc theo loại sự kiện (event_type)", ["__ALL__"] + list(api.list_event_types()),
+                         format_func=lambda e: "Tất cả" if e == "__ALL__" else e, key="log_filter")
+    limit = c2.selectbox("Số dòng", [50, 200, 1000], key="log_limit")
+    logs = api.get_audit_logs(event_type=None if event == "__ALL__" else event, limit=limit)
+    if not logs:
+        st.info("Chưa có sự kiện nào.")
+        return
+    log_rows = [{
+        "#": str(l["log_id"]), "Thời điểm": fmt_dt(l["created_at"]), "Người/hệ thống": l["actor"],
+        "event_type": l["event_type"], "Đối tượng": l["entity_type"] or "",
+        "Mã": "" if l["entity_id"] is None else str(l["entity_id"]),
+        "Phiên": "" if l["run_id"] is None else str(l["run_id"]), "Chi tiết": l["detail_json"] or "",
+    } for l in logs]
+    st.caption("Dòng ĐỎ = thao tác bị guardrail chặn (GUARDRAIL_BLOCKED).")
+    st.dataframe(styled_table(pd.DataFrame(log_rows), ("event_type", "GUARDRAIL", RED_STYLE)),
+                 hide_index=True)
+
+
+@st.cache_resource
+def recover_stale_runs_once():
+    """Chạy 1 lần khi app khởi động: phiên RUNNING bị bỏ dở quá lâu -> FAILED (Mục 9)."""
+    return api.recover_stale_runs()
 
 
 def main():
     load_env_file()
+    recover_stale_runs_once()
     if "user" not in st.session_state:
         render_login()
         return
