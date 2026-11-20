@@ -370,8 +370,10 @@ def render_run_block(user):
         st.caption(f"Bắt đầu {fmt_dt(run['started_at'])} · kết thúc {fmt_dt(run['finished_at'])}")
         if run.get("error"):
             st.error(run["error"])
-    else:
+    elif is_manager(user):
         st.info("Hôm nay chưa chạy rà soát. Bấm nút bên dưới để chạy.")
+    else:
+        st.info("Hôm nay chưa chạy rà soát. Quản lý sẽ chạy rà soát hoặc hệ thống tự chạy lúc 08:00.")
     if not is_manager(user):
         st.caption(MANAGER_ONLY_NOTE)
         return
