@@ -9,8 +9,9 @@ Phần (2) dùng chung cho cả hàm giả lẫn hàm thật, vì stubs.py trả
 
 Không chứa luật nghiệp vụ: kiểm tra quyền, MOQ, trạng thái PO... đều do hàm ghi tự làm.
 
-CÁCH ĐỔI SANG HÀM THẬT (việc Y03, Y09): đổi DUNG_HAM_GIA = False ở dưới.
-Hàm thật nào chưa có (file còn rỗng) thì giao diện báo "chưa có" thay vì sập.
+Từ việc Y03: DUNG_HAM_GIA = False, tức là dùng hàm thật và data/bakery.db.
+Muốn quay lại hàm giả để thử giao diện thì đổi thành True. Hàm thật nào chưa có
+thì giao diện báo "chưa có" thay vì sập. Y09 xóa stubs.py và nhánh hàm giả.
 """
 from __future__ import annotations
 
@@ -21,7 +22,7 @@ import json
 #   True  = dùng hàm giả trong services/stubs.py (dữ liệu trong bộ nhớ)
 #   False = dùng hàm thật và database data/bakery.db (chạy data/init_db.py trước)
 # ===========================================================================
-DUNG_HAM_GIA = True
+DUNG_HAM_GIA = False
 
 if DUNG_HAM_GIA:
     from services import stubs as _repo

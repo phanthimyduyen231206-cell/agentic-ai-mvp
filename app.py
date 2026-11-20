@@ -265,6 +265,16 @@ def render_tab1(user):
 
     # ---- 4. Xuất kho ---------------------------------------------------------
     st.subheader("4. Xuất kho (tự trừ theo FEFO)")
+    if not is_manager(user):
+        st.caption(MANAGER_ONLY_NOTE)
+    else:
+        render_issue_form(ingredients, ing_by_id, user)
+
+    # ---- 5. Danh sách PO -----------------------------------------------------
+    render_po_list_and_receive(ing_by_id, now, user)
+
+
+def render_issue_form(ingredients, ing_by_id, user):
     with st.form("form_issue"):
         ing_id = st.selectbox(
             "Nguyên liệu", [i["id"] for i in ingredients],
@@ -280,7 +290,8 @@ def render_tab1(user):
 
         run_action("tab1", lambda: api.issue_stock_fefo(ing_id, float(qty), user), _ok)
 
-    # ---- 5. Danh sách PO -----------------------------------------------------
+
+def render_po_list_and_receive(ing_by_id, now, user):
     st.subheader("5. Danh sách PO")
     st.caption("Hai cột tách riêng: status (vòng đời PO) và delivery_status (giao hàng). DELAYED tô cam.")
     pos = api.list_pos()
