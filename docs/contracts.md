@@ -122,6 +122,20 @@ def compute_alerts(run_date: date) -> list[AlertDraft]   # chỉ nguyên liệu 
 `check_delayed_po(ingredient_id=None, days=3)`, `compare_suppliers(ingredient_id)`. Mỗi hàm trả `dict` JSON được.
 **Không** có `create_draft_po`, `write_audit_log` trong registry.
 
+**Kết quả trả về** (tên trường dùng chung cho tool giả trong test, prompt và giao diện; số lượng theo `unit` của nguyên liệu):
+
+| Tool | Trường chính |
+|---|---|
+| Mọi tool | `ok: true`. Lỗi đầu vào: `{"ok": false, "error_code", "message"}`, không raise |
+| `check_inventory_fefo` (có `ingredient_id`) | `ingredient_id`, `ingredient_name`, `unit`, `at`, `days`, `min_stock`, **`on_hand_qty`**, `expiring_qty`, `batches: [{batch_id, qty, unit, expiry_date, received_at, days_left, expires_within_days}]`; khi `days > 0` thêm `fefo_projection: {expired_qty, unmet_qty, remaining_qty, projected_stock, expired, plan}` (Mục 4) |
+| `check_inventory_fefo` (không có `ingredient_id`) | `at`, `days`, `items: [{ingredient_id, ingredient_name, unit, min_stock, on_hand_qty, expiring_qty, batch_count}]` |
+| `calc_preorder_demand` | `days`, `from_date`, `to_date`, `ingredient_id`, `ingredient_name`, `unit`, `preorder_demand`, `daily_usage`, `retail_demand`, `earliest_preorder_date`, `orders: [{order_id, cake_name, quantity, qty_per_cake, need_qty, delivery_date}]`; không có `ingredient_id` thì các trường nguyên liệu nằm trong `items: [...]` |
+| `check_delayed_po` | `days`, `from_date`, `to_date`, `incoming_pos`, `delayed_pos`, `overdue_not_yet_flagged`, `open_unsent_pos` (mỗi PO: `po_id, ingredient_id, sup_id, order_qty, received_qty, remaining_qty, status, delivery_status, expected_delivery_date`); có `ingredient_id` thì thêm **`incoming_stock`**, **`delayed_qty`**; không có thì `by_ingredient: [{ingredient_id, incoming_stock, delayed_qty}]` |
+| `compare_suppliers` | `ingredient_id`, `ingredient_name`, `unit`, `suppliers: [{sup_id, name, price, lead_time_hours, lead_time_days, moq, reliability, active, has_contact_email}]` |
+
+- Tên số lượng tồn là **`on_hand_qty`** (không dùng `total_qty`).
+- Giá: bảng NCC và `compare_suppliers` dùng **`price`**; phương án A/B của calc (Mục 5) và PO dùng **`unit_price`**. Cùng một giá trị, khác tên theo nơi dùng.
+
 ## 7. agent/core_agent.py, prompts.py – Mai Anh (M02, M03)
 
 ```python
@@ -153,6 +167,20 @@ def mark_received(po_id: str, qty: float, user, expiry_date: datetime | None = N
 def dismiss_alert(alert_id: int, user) -> None  # quản lý bấm "Bỏ qua": cảnh báo OPEN → DISMISSED, ghi resolved_at,
                                                 # log ALERT_DISMISSED; lỗi NOT_MANAGER / ALERT_NOT_OPEN
 ```
+- `user` là dict do app tạo khi đăng nhập: `{"username": "...", "role": "MANAGER" | "STAFF"}`. Mọi hàm trên
+  (kể cả `create_draft_po`, `mark_received`, `dismiss_alert`) chỉ cho `role == "MANAGER"`, sai thì `NOT_MANAGER`.
+- Bị chặn → không ghi gì, raise `GuardrailError`, ghi `GUARDRAIL_BLOCKED`. Riêng gửi thất bại: PO vẫn APPROVED,
+  tăng `send_attempts`, lưu `last_send_error`, ghi `PO_SEND_FAILED`, rồi raise `GuardrailError("SEND_FAILED")`.
+- `send_po` đặt `delivery_status = PENDING`, `expected_delivery_date = sent_at + lead_time_hours`
+  (**chỉ có ngày** `YYYY-MM-DD`, như Mục 0); file `outbox/PO-xxx.csv` (UTF-8 có BOM để Excel đọc đúng tiếng Việt).
+- Cảnh báo của PO → RESOLVED khi PO SENT, REJECTED hoặc CANCELLED.
+- `mark_received` chỉ nhận một lần đủ số lượng còn lại (khác → `QTY_INVALID`), gọi
+  `inventory_service.receive_batch(po_id, qty, expiry_date)` để tạo lô. **`receive_batch` ghi `BATCH_RECEIVED`**,
+  `mark_received` ghi `DELIVERY_RECEIVED` và đổi `delivery_status = RECEIVED`, `received_qty`.
+  `receive_batch` không tự đổi trạng thái PO và **không kiểm `delivery_status`**: để chống nhận trùng,
+  `mark_received` đánh dấu PO RECEIVED trước rồi mới gọi `receive_batch` (lỗi thì trả PO về như cũ).
+  `receive_batch` chỉ cần đọc PO để lấy `ingredient_id`, tạo lô (hạn mặc định = ngày nhận + shelf_life_days), trả `batch_id`.
+
 Mã lỗi `GuardrailError.code`: QTY_INVALID, INGREDIENT_NOT_FOUND, SUPPLIER_INVALID, MOQ_VIOLATION, ALERT_NOT_OPEN, DUPLICATE_PO, NOT_MANAGER, INVALID_TRANSITION, SNAPSHOT_CHANGED, SEND_FAILED.
 
 ## 10. services/audit_service.py, chat_service.py – Mai Anh (M04, M05)
@@ -166,6 +194,13 @@ def ask_chat(question: str, user) -> dict      # {"answer": str, "refused": bool
 Lưu kết quả Gemini vào bảng `alerts` (bảng không có cột riêng cho đánh đổi):
 - `explanation` ← `explanation` của Gemini (hoặc câu mẫu dự phòng).
 - `options_json` ← danh sách phương án của calc, mỗi phương án thêm khóa `"tradeoff"`: A nhận `tradeoff_a`, B nhận `tradeoff_b`.
+
+Phần còn lại của cảnh báo lấy nguyên từ AlertDraft (Mục 5):
+- `causes` ← lưu JSON **đủ dạng có số lượng** như AlertDraft, ví dụ
+  `[{"code": "EXPIRING_LOT", "qty": 6.0}, {"code": "PREORDER", "qty": 3.0}, {"code": "DAILY_USAGE", "qty": 3.0}]`.
+  Không lưu dạng chỉ có mã `["EXPIRING_LOT", ...]`, vì Tab 2 cần hiện số lượng của từng nguyên nhân.
+  Mã OPEN_PO, SUPPLIER_DELAY nếu không có số lượng thì để `"qty": null`.
+- `main_cause`, `projected_stock`, `shortage_qty`, `snapshot_hash` ← lấy đúng giá trị cùng tên trong AlertDraft.
 
 ## 11. Hàm cho giao diện – `services/ui_api.py` (Yến) và stubs
 

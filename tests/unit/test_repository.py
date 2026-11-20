@@ -117,9 +117,22 @@ def test_snapshot_hash_differs_between_ingredients(db):
 
 def test_update_rejects_unknown_column(db):
     first = repo.get_batches(_egg()["id"])[0]
-    with pytest.raises(ValueError):
-        repo._update(repo.get_connection(), "inventory_batches", "batch_id",
-                     first["batch_id"], {"cot_khong_ton_tai": 1})
+    conn = repo.get_connection()
+    try:
+        with pytest.raises(ValueError):
+            repo._update(conn, "inventory_batches", "batch_id",
+                         first["batch_id"], {"cot_khong_ton_tai": 1})
+    finally:
+        conn.close()
+
+
+def test_insert_batch_saves_iso_time_with_T(db):
+    """contracts.md: ngay gio luu dang 'YYYY-MM-DDTHH:MM:SS'."""
+    egg_id = _egg()["id"]
+    bid = repo.insert_batch(egg_id, 5, datetime(2026, 12, 1, 8, 0), datetime(2026, 11, 18, 9, 0))
+    saved = repo.get_batch(bid)
+    assert saved["expiry_date"] == "2026-12-01T08:00:00"
+    assert saved["received_at"] == "2026-11-18T09:00:00"
 
 
 def test_shared_connection_rollback(db):

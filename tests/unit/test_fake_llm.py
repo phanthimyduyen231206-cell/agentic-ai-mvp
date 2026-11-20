@@ -15,7 +15,7 @@ def test_example_morning_audit_normal() -> None:
         {
             "alerts": [
                 {
-                    "alert_id": "ALT-001",
+                    "ingredient_id": "KEM_TUOI",
                     "ingredient_name": "Kem tươi",
                     "main_cause": "EXPIRING_LOT",
                 }
@@ -28,7 +28,7 @@ def test_example_morning_audit_normal() -> None:
     assert response["type"] == "text"
     data = json.loads(response["text"])
     assert "alerts" in data
-    assert data["alerts"][0]["alert_id"] == "ALT-001"
+    assert data["alerts"][0]["ingredient_id"] == "KEM_TUOI"
     assert "EXPIRING_LOT" in data["alerts"][0]["explanation"]
 
 
@@ -90,14 +90,14 @@ def test_example_tool_call_then_answer() -> None:
 
 
 def test_morning_audit_accepts_list_payload() -> None:
-    """compute_alerts trả về list cảnh báo: FakeLLM phải giữ đúng alert_id."""
+    """compute_alerts trả về list cảnh báo: FakeLLM phải giữ đúng ingredient_id."""
     llm = FakeLLM()
     payload = json.dumps(
-        [{"alert_id": "ALT-007", "ingredient_name": "Bơ lạt", "main_cause": "SUPPLIER_DELAY"}],
+        [{"ingredient_id": "BO_LAT", "ingredient_name": "Bơ lạt", "main_cause": "SUPPLIER_DELAY"}],
         ensure_ascii=False,
     )
     data = json.loads(llm.generate("MORNING_AUDIT", "", payload)["text"])
-    assert [a["alert_id"] for a in data["alerts"]] == ["ALT-007"]
+    assert [a["ingredient_id"] for a in data["alerts"]] == ["BO_LAT"]
     for key in ("explanation", "tradeoff_a", "tradeoff_b"):
         assert data["alerts"][0][key]
 
