@@ -241,3 +241,79 @@ def test_snapshot_hash_changes_when_stock_changes(db, drafts):
     batch = repo.get_batches("KEM_TUOI")[0]
     repo.update_batch_qty(batch["batch_id"], batch["qty"] + 1)
     assert repo.compute_snapshot_hash("KEM_TUOI") != saved
+
+
+# ---------------------------------------------------------------------------
+# Phiên mới đóng cảnh báo OPEN của phiên trước (fix/audit-supersede)
+# ---------------------------------------------------------------------------
+def _dismissed_logs():
+    return [dict(r, detail=json.loads(r["detail_json"] or "{}"))
+            for r in repo.get_audit_logs(event_type="ALERT_DISMISSED")]
+
+
+def test_rerun_supersedes_old_open_alerts(db, drafts):
+    run1 = run_morning_audit("MANUAL", user=MANAGER, llm=FakeLLM())
+    run2 = run_morning_audit("MANUAL", rerun=True, user=MANAGER, llm=FakeLLM())
+
+    open_alerts = repo.get_alerts(status="OPEN")
+    ids = sorted(a["ingredient_id"] for a in open_alerts)
+    assert ids == sorted({"KEM_TUOI", "BO_LAT"})  # mỗi nguyên liệu đúng 1 cảnh báo OPEN
+    assert {a["run_id"] for a in open_alerts} == {run2["run_id"]}  # và là của phiên 2
+
+    for alert_id in run1["alert_ids"]:
+        old = repo.get_alert(alert_id)
+        assert old["status"] == "DISMISSED" and old["resolved_at"]
+
+    logs = _dismissed_logs()
+    assert sorted(int(l["entity_id"]) for l in logs) == sorted(run1["alert_ids"])
+    for l in logs:
+        assert l["actor"] == "system"
+        assert l["detail"] == {"reason": "SUPERSEDED", "by_run": run2["run_id"]}
+        assert l["run_id"] == run2["run_id"]
+
+
+def test_selected_alert_kept_after_rerun(db, drafts):
+    run1 = run_morning_audit("MANUAL", user=MANAGER, llm=FakeLLM())
+    kem = repo.get_alerts(run_id=run1["run_id"], ingredient_id="KEM_TUOI")[0]
+    repo.update_alert(kem["alert_id"], {"status": "SELECTED"})  # quản lý đã chọn A, PO đang xử lý
+
+    run_morning_audit("MANUAL", rerun=True, user=MANAGER, llm=FakeLLM())
+
+    assert repo.get_alert(kem["alert_id"])["status"] == "SELECTED"
+    bo_old = repo.get_alerts(run_id=run1["run_id"], ingredient_id="BO_LAT")[0]
+    assert bo_old["status"] == "DISMISSED"
+    assert kem["alert_id"] not in [int(l["entity_id"]) for l in _dismissed_logs()]
+
+
+def test_no_shortage_run_also_closes_old_alerts(db, drafts):
+    run1 = run_morning_audit("MANUAL", user=MANAGER, llm=FakeLLM())
+    drafts["value"] = []  # phiên 2: không còn thiếu hàng (như kịch bản no_shortage)
+    run2 = run_morning_audit("MANUAL", rerun=True, user=MANAGER, llm=FakeLLM())
+
+    assert run2["status"] == "SUCCEEDED" and run2["alert_ids"] == []
+    assert repo.get_alerts(status="OPEN") == []
+    assert all(repo.get_alert(i)["status"] == "DISMISSED" for i in run1["alert_ids"])
+    detail = json.loads(repo.get_audit_logs(event_type="RUN_SUCCEEDED")[0]["detail_json"])
+    assert sorted(detail["superseded"]) == sorted(run1["alert_ids"])
+
+
+def test_next_day_scheduled_run_closes_yesterday_alerts(db, drafts, monkeypatch):
+    run1 = run_morning_audit("SCHEDULED", llm=FakeLLM())
+    monkeypatch.setenv("DEMO_DATE", "2026-11-21T08:00")  # sang ngày mới, lịch 08:00 chạy
+    run2 = run_morning_audit("SCHEDULED", llm=FakeLLM())
+
+    assert run2["status"] == "SUCCEEDED" and run2["run_id"] != run1["run_id"]
+    assert {a["run_id"] for a in repo.get_alerts(status="OPEN")} == {run2["run_id"]}
+    assert len(repo.get_alerts(status="OPEN")) == 2
+
+
+def test_failed_rerun_does_not_close_old_alerts(db, drafts, monkeypatch):
+    run1 = run_morning_audit("MANUAL", user=MANAGER, llm=FakeLLM())
+
+    def boom(run_date):
+        raise RuntimeError("calc lỗi")
+
+    monkeypatch.setattr(calc, "compute_alerts", boom)
+    assert run_morning_audit("MANUAL", rerun=True, user=MANAGER, llm=FakeLLM())["status"] == "FAILED"
+    assert all(repo.get_alert(i)["status"] == "OPEN" for i in run1["alert_ids"])
+    assert _dismissed_logs() == []
