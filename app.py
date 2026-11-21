@@ -45,6 +45,14 @@ button[data-baseweb="tab"] p, [data-testid="stTab"] p { font-size: 1rem; font-we
 .bk-table td { text-align: center; padding: 8px 12px; border-bottom: 1px solid #F3E8DA; vertical-align: middle;
     white-space: nowrap; }
 .bk-table tbody tr:last-child td { border-bottom: none; }
+/* Dòng phiên rà soát ở Tab Rà soát: chữ và nút to hơn, 3 phần thẳng hàng giữa */
+[data-testid="stMarkdownContainer"]:has(.run-line) { margin-bottom: 0 !important; }
+.run-line { font-family: 'Be Vietnam Pro', sans-serif; font-size: 1.25rem; line-height: 1.5; margin: 0; }
+.run-line .run-sub { font-size: 1.05rem; white-space: nowrap; }
+.st-key-rerun_flag, .st-key-btn_run_audit { display: flex; align-items: center; justify-content: center; }
+.st-key-rerun_flag label p { font-size: 1.1rem; }
+.st-key-btn_run_audit button { font-size: 1.1rem; padding: 0.6rem 1.3rem; }
+.st-key-btn_run_audit button p { font-size: 1.1rem; }
 /* Banner: chữ và con số nằm giữa từng ô */
 [data-testid="stMetric"] { text-align: center; }
 [data-testid="stMetricLabel"], [data-testid="stMetricValue"] { display: flex; justify-content: center; }
@@ -145,11 +153,14 @@ def show_flash(tab):
         st.session_state.pop("flash", None)
 
 
-def run_action(tab, action, ok_message):
-    """Chạy một thao tác GHI. Thành công -> báo xanh; GuardrailError -> báo đỏ. Rồi vẽ lại trang."""
+def run_action(tab, action, ok_message, next_view=None):
+    """Chạy một thao tác GHI. Thành công -> báo xanh; GuardrailError -> báo đỏ. Rồi vẽ lại trang.
+    next_view = (khóa mục con, mã mục): thành công thì tự chuyển sang mục đó (vd Tạo PO -> PO cần xử lý)."""
     try:
         result = action()
         flash(tab, "success", ok_message(result) if callable(ok_message) else ok_message)
+        if next_view:
+            st.session_state[next_view[0] + "_next"] = next_view[1]
     except api.GuardrailError as err:
         flash(tab, "error", f"⛔ Bị chặn [{err.code}]: {err.message}")
     st.rerun()
@@ -263,87 +274,166 @@ def show_table(data, max_height=None):
     st.markdown(f'<div class="bk-table"{box}>{html}</div>', unsafe_allow_html=True)
 
 
+# ---------------------------------------------------------------------------
+# Thanh chọn mục con (thay cho st.tabs để NHỚ mục đang xem sau mỗi lần bấm nút)
+# ---------------------------------------------------------------------------
+def sub_nav(key, options, default):
+    """Hàng nút chọn mục con, nhớ lựa chọn trong st.session_state[key].
+
+    options: {mã cố định: nhãn hiện ra}. Nhãn có thể đổi (vd số đếm "(2)" -> "(3)")
+    mà mục đang chọn vẫn giữ nguyên, vì lựa chọn lưu theo MÃ chứ không theo nhãn.
+    Muốn tự chuyển mục sau một thao tác: đặt st.session_state[key + "_next"] = mã.
+    """
+    last_key = key + "_last"
+    pending = st.session_state.pop(key + "_next", None)
+    if pending in options:
+        st.session_state[key] = pending
+    if st.session_state.get(key) not in options:
+        st.session_state[key] = st.session_state.get(last_key) if st.session_state.get(last_key) in options else default
+
+    def _keep_one_selected():
+        # Bấm lại vào mục đang chọn sẽ bỏ chọn -> giữ mục cũ, luôn có 1 mục được chọn.
+        if st.session_state.get(key) is None:
+            st.session_state[key] = st.session_state.get(last_key, default)
+
+    nav_args = dict(format_func=lambda v: options[v], key=key, selection_mode="single",
+                    label_visibility="collapsed", on_change=_keep_one_selected)
+    try:
+        # width="stretch": các nút chia đều hết chiều ngang
+        value = st.segmented_control("Chọn mục", list(options), width="stretch", **nav_args)
+    except TypeError:  # Streamlit bản cũ chưa có tham số width
+        value = st.segmented_control("Chọn mục", list(options), **nav_args)
+    if value not in options:
+        value = st.session_state.get(key) if st.session_state.get(key) in options else default
+    st.session_state[last_key] = value
+    return value
+
+
+PO_STATUS_LABELS = {"DRAFT": "📝 Nháp", "APPROVED": "✅ Đã duyệt", "SENT": "📤 Đã gửi"}
+DELIVERY_LABELS = {"PENDING": "🚚 Đang giao", "DELAYED": "⚠️ Giao trễ", "RECEIVED": "📥 Đã nhận"}
+CLOSED_LABELS = {"REJECTED": "❌ Bị từ chối", "CANCELLED": "🗑 Đã hủy"}
+RUN_STATUS_LABELS = {"SUCCEEDED": "✅ Thành công", "FAILED": "❌ Lỗi", "RUNNING": "⏳ Đang chạy"}
+
+
+def po_lifecycle_label(po):
+    if po.get("closed_reason"):
+        return CLOSED_LABELS.get(po["closed_reason"], po["closed_reason"])
+    return PO_STATUS_LABELS.get(po["status"], po["status"])
+
+
+# ===========================================================================
+# ====== TAB 1: KHO & ĐƠN ĐẶT TRƯỚC ======
+# ===========================================================================
+TAB1_VIEWS = {
+    "stock": "📊 Tồn kho & dự báo", "lots": "🧾 Lô FEFO", "preorders": "🎂 Đơn đặt trước",
+    "issue": "📤 Xuất kho", "po": "🚚 PO & nhận hàng",
+}
+
+
 def render_tab1(user):
     show_flash("tab1")
-    now = api.now()
     ingredients = api.get_ingredients()
     ing_by_id = {i["id"]: i for i in ingredients}
+    overview = api.stock_overview(3)
+    view = sub_nav("tab1_view", TAB1_VIEWS, "stock")
+    if view == "stock":
+        render_stock_view(overview)
+    elif view == "lots":
+        render_lots_view(ingredients, ing_by_id, overview)
+    elif view == "preorders":
+        render_preorders_view()
+    elif view == "issue":
+        render_issue_view(ingredients, ing_by_id, user)
+    else:
+        render_po_list_and_receive(ing_by_id, api.now(), user)
 
-    # ---- 1. Tồn theo nguyên liệu + projected_stock so với min_stock -------
-    st.subheader("1. Tồn kho và dự báo 3 ngày tới")
-    st.caption(
-        "projected_stock = tồn dự kiến sau 3 ngày (đã trừ nhu cầu và lượng hết hạn trước khi dùng). "
-        "Nhỏ hơn mức tối thiểu (min_stock) thì bị cảnh báo THIẾU.")
-    summary_rows, lots_by_ing, proj_by_ing = [], {}, {}
-    for ing in ingredients:
-        lots = api.get_batches_fefo(ing["id"], now)
-        proj = api.fefo_projection(ing["id"], 3, now)
-        lots_by_ing[ing["id"]] = lots
-        proj_by_ing[ing["id"]] = proj
-        short = proj["projected_stock"] < ing["min_stock"]
-        summary_rows.append({
-            "Nguyên liệu": ing["name"], "Đơn vị": ing["unit"],
-            "Tồn còn hạn": round(sum(b["qty"] for b in lots), 2),
-            "Hết hạn trước khi dùng": round(proj["expired_qty"], 2),
-            "projected_stock (3 ngày)": round(proj["projected_stock"], 2),
-            "min_stock": ing["min_stock"],
-            "Tình trạng": "⚠️ THIẾU" if short else "✅ Đủ",
-        })
-    df = pd.DataFrame(summary_rows)
-    show_table(styled_table(df, ("Tình trạng", "⚠️", RED_STYLE)))
 
-    # ---- 2. Bảng lô theo FEFO ---------------------------------------------
-    st.subheader("2. Tồn theo lô (FEFO: hạn sớm nhất ở trên)")
-    st.caption("Dòng ĐỎ = lô có lượng sẽ hết hạn trước khi kịp dùng.")
+def count_expiring_lots(overview):
+    return len({e["batch_id"] for row in overview for e in row["expired_lots"]})
+
+
+def render_stock_view(overview):
+    n_short = sum(1 for r in overview if r["short"])
+    n_lots = count_expiring_lots(overview)
+    st.markdown(f"**⚠️ {n_short} nguyên liệu thiếu · ✅ {len(overview) - n_short} nguyên liệu đủ · "
+                f"🕒 {n_lots} lô sẽ hết hạn trước khi dùng hết**")
+    st.caption("Tồn dự kiến = Tồn còn hạn − Đơn đặt trước − Bán lẻ 3 ngày + Hàng sắp về − Sẽ hết hạn")
+    st.caption("Hạn tính theo FEFO: Dùng lô hết hạn sớm nhất trước")
+    only_short = st.checkbox("Chỉ hiện nguyên liệu thiếu", key="stock_only_short")
+    rows = sorted(overview, key=lambda r: (not r["short"], r["name"]))
+    if only_short:
+        rows = [r for r in rows if r["short"]]
+    if not rows:
+        st.success("Không có nguyên liệu nào thiếu trong 3 ngày tới.")
+        return
+    table = [{
+        "Nguyên liệu": f"{r['name']} ({r['unit']})",
+        "Tồn còn hạn": r["on_hand"],
+        "− Đơn đặt trước": r["preorder"],
+        "− Bán lẻ 3 ngày": f"{fmt_qty(r['retail'])} ({fmt_qty(r['daily'])}/ngày)",
+        "+ Hàng sắp về": r["incoming"],
+        "− Sẽ hết hạn": r["expiring"],
+        "= Tồn dự kiến": r["projected"],
+        "Mức tối thiểu": r["min_stock"],
+        "Tình trạng": "⚠️ THIẾU" if r["short"] else "✅ Đủ",
+    } for r in rows]
+    show_table(styled_table(pd.DataFrame(table), ("Tình trạng", "⚠️", RED_STYLE)))
+    mismatched = [r["name"] for r in rows if not r["consistent"]]
+    if mismatched:
+        st.warning("Số liệu các cột chưa khớp với Tồn dự kiến ở: " + ", ".join(mismatched)
+                   + ". Báo nhóm kiểm tra services/fefo.py và agent/tools.py.")
+
+
+def render_lots_view(ingredients, ing_by_id, overview):
     choice = st.selectbox(
         "Xem nguyên liệu", ["__ALL__"] + [i["id"] for i in ingredients], key="lot_filter",
         format_func=lambda x: "Tất cả nguyên liệu" if x == "__ALL__" else ing_by_id[x]["name"])
-    lot_rows = []
-    for ing in ingredients:
-        if choice not in ("__ALL__", ing["id"]):
-            continue
-        expired_map = {}
-        for e in proj_by_ing[ing["id"]].get("expired", []):
+    now = api.now()
+    expired_map = {}
+    for row in overview:
+        for e in row["expired_lots"]:
             expired_map[e["batch_id"]] = expired_map.get(e["batch_id"], 0) + e["qty"]
-        for lot in lots_by_ing[ing["id"]]:
-            days_left = (to_dt(lot["expiry_date"]) - now).total_seconds() / 86400
-            exp_qty = expired_map.get(lot["batch_id"], 0)
-            lot_rows.append({
-                "Nguyên liệu": ing["name"], "Mã lô": lot["batch_id"],
-                "Số lượng": lot["qty"], "Đơn vị": ing["unit"],
-                "Hạn dùng": fmt_dt(lot["expiry_date"]), "Còn lại (ngày)": round(days_left, 1),
-                "Ghi chú": f"⚠️ {fmt_qty(exp_qty)} {ing['unit']} sẽ hết hạn trước khi kịp dùng" if exp_qty else "",
-            })
+    lots = []
+    for ing in ingredients:
+        if choice in ("__ALL__", ing["id"]):
+            lots += [(ing, lot) for lot in api.get_batches_fefo(ing["id"], now)]
+    lots.sort(key=lambda x: (expired_map.get(x[1]["batch_id"], 0) <= 0, x[1]["expiry_date"], x[1]["received_at"]))
+    lot_rows = []
+    for ing, lot in lots:
+        exp_qty = expired_map.get(lot["batch_id"], 0)
+        lot_rows.append({
+            "Nguyên liệu": ing["name"], "Mã lô": lot["batch_id"], "Số lượng": float(lot["qty"]),
+            "Đơn vị": ing["unit"], "Hạn dùng": fmt_dt(lot["expiry_date"]),
+            "Còn lại (ngày)": round((to_dt(lot["expiry_date"]) - now).total_seconds() / 86400, 1),
+            "Ghi chú": f"⚠️ {fmt_qty(exp_qty)} {ing['unit']} sẽ hết hạn trước khi kịp dùng" if exp_qty else "",
+        })
     if lot_rows:
-        show_table(styled_table(pd.DataFrame(lot_rows), ("Ghi chú", "⚠️", RED_STYLE)), max_height=460)
+        show_table(styled_table(pd.DataFrame(lot_rows), ("Ghi chú", "⚠️", RED_STYLE)), max_height=520)
     else:
         st.info("Không có lô nào còn hạn.")
 
-    # ---- 3. Đơn đặt trước ---------------------------------------------------
-    st.subheader("3. Đơn đặt trước")
+
+def render_preorders_view():
     pre_rows = [{"Mã đơn": p["order_id"], "Bánh": p["cake_name"], "Số lượng": p["quantity"],
                  "Ngày giao": fmt_date(p["delivery_date"])}
-                for p in sorted(api.list_preorders(), key=lambda p: p["delivery_date"])]
-    show_table(pd.DataFrame(pre_rows))
+                for p in sorted(api.list_preorders(), key=lambda p: (p["delivery_date"], p["order_id"]))]
+    if pre_rows:
+        show_table(pd.DataFrame(pre_rows))
+    else:
+        st.info("Chưa có đơn đặt trước nào.")
 
-    # ---- 4. Xuất kho ---------------------------------------------------------
-    st.subheader("4. Xuất kho (tự trừ theo FEFO)")
+
+def render_issue_view(ingredients, ing_by_id, user):
+    st.caption("Hệ thống tự trừ theo FEFO: lấy lô hết hạn sớm nhất trước.")
     if not is_manager(user):
         st.caption(MANAGER_ONLY_NOTE)
-    else:
-        render_issue_form(ingredients, ing_by_id, user)
-
-    # ---- 5. Danh sách PO -----------------------------------------------------
-    render_po_list_and_receive(ing_by_id, now, user)
-
-
-def render_issue_form(ingredients, ing_by_id, user):
+        return
     with st.form("form_issue"):
         ing_id = st.selectbox(
             "Nguyên liệu", [i["id"] for i in ingredients],
             format_func=lambda x: f"{ing_by_id[x]['name']} ({ing_by_id[x]['unit']})")
         qty = st.number_input("Số lượng xuất", min_value=0.0, value=1.0, step=1.0)
-        submitted = st.form_submit_button("Xuất kho")
+        submitted = st.form_submit_button("📤 Xuất kho", type="primary")
     if submitted:
         ing = ing_by_id[ing_id]
 
@@ -355,27 +445,24 @@ def render_issue_form(ingredients, ing_by_id, user):
 
 
 def render_po_list_and_receive(ing_by_id, now, user):
-    st.subheader("5. Danh sách PO")
-    st.caption("Hai cột tách riêng: status (vòng đời PO) và delivery_status (giao hàng). DELAYED tô cam.")
+    st.markdown("**Danh sách PO**")
     pos = api.list_pos()
     if pos:
-        po_rows = []
-        for p in reversed(pos):
-            po_rows.append({
-                "Mã PO": p["po_id"],
-                "Nguyên liệu": ing_by_id.get(p["ingredient_id"], {}).get("name", p["ingredient_id"]),
-                "NCC": p.get("sup_name") or p["sup_id"],
-                "Số lượng": p["order_qty"], "Tổng tiền": fmt_money(p["total_cost"]),
-                "status": p["status"], "delivery_status": p["delivery_status"] or "—",
-                "Dự kiến giao": fmt_date(p["expected_delivery_date"]),
-                "Đóng (closed_reason)": p["closed_reason"] or "—",
-            })
-        show_table(styled_table(pd.DataFrame(po_rows), ("delivery_status", "DELAYED", ORANGE_STYLE)))
+        po_rows = [{
+            "Mã PO": p["po_id"],
+            "Nguyên liệu": ing_by_id.get(p["ingredient_id"], {}).get("name", p["ingredient_id"]),
+            "NCC": p.get("sup_name") or p["sup_id"],
+            "Số lượng": f"{fmt_qty(p['order_qty'])} {ing_by_id.get(p['ingredient_id'], {}).get('unit', '')}",
+            "Tổng tiền": fmt_money(p["total_cost"]),
+            "Vòng đời PO": po_lifecycle_label(p),
+            "Giao hàng": DELIVERY_LABELS.get(p["delivery_status"], "—"),
+            "Dự kiến giao": fmt_date(p["expected_delivery_date"]),
+        } for p in reversed(pos)]
+        show_table(styled_table(pd.DataFrame(po_rows), ("Giao hàng", "⚠️", ORANGE_STYLE)), max_height=420)
     else:
         st.info("Chưa có PO nào.")
 
-    # ---- 6. Nhận hàng ---------------------------------------------------------
-    st.subheader("6. Xác nhận đã nhận hàng")
+    st.markdown("**Xác nhận đã nhận hàng**")
     receivable = [p for p in pos if p["status"] == "SENT" and p["delivery_status"] in ("PENDING", "DELAYED")]
     if not is_manager(user):
         st.caption(MANAGER_ONLY_NOTE)
@@ -387,14 +474,15 @@ def render_po_list_and_receive(ing_by_id, now, user):
             "Chọn PO đã nhận", list(po_by_id), key="recv_po",
             format_func=lambda x: (
                 f"{x} - {ing_by_id.get(po_by_id[x]['ingredient_id'], {}).get('name', '')} - "
-                f"{fmt_qty(po_by_id[x]['order_qty'])} ({po_by_id[x]['delivery_status']})"))
+                f"{fmt_qty(po_by_id[x]['order_qty'])} "
+                f"({DELIVERY_LABELS.get(po_by_id[x]['delivery_status'], po_by_id[x]['delivery_status'])})"))
         st.caption("MVP: nhận một lần đủ số lượng đặt.")
         use_expiry = st.checkbox(
             "Nhập hạn dùng in trên bao bì (nếu bỏ trống, hệ thống tự tính theo hạn dùng mặc định)",
             key="recv_use_expiry")
-        expiry_date = st.date_input("Hạn dùng", value=now.date() + timedelta(days=7),
+        expiry_date = st.date_input("Hạn dùng", value=now.date() + timedelta(days=7), min_value=now.date(),
                                     key="recv_expiry") if use_expiry else None
-        if st.button("📥 Xác nhận đã nhận đủ hàng", key="btn_receive"):
+        if st.button("📥 Xác nhận đã nhận đủ hàng", type="primary", key="btn_receive"):
             po = po_by_id[po_id]
             expiry_dt = datetime.combine(expiry_date, dtime(23, 59, 59)) if expiry_date else None
             run_action(
@@ -404,7 +492,7 @@ def render_po_list_and_receive(ing_by_id, now, user):
 
 
 # ===========================================================================
-# ====== TAB 2 ======
+# ====== TAB 2: RÀ SOÁT ======
 # ===========================================================================
 def get_moq(ingredient_id, sup_id):
     for s in api.get_suppliers(ingredient_id):
@@ -421,32 +509,39 @@ def round_up_moq(qty, moq):
 
 
 def render_run_block(user):
-    st.subheader("Rà soát buổi sáng (08:00)")
+    """Thông tin phiên rà soát hôm nay gọn trong 1 dòng, nút chạy ngay bên cạnh."""
     run = api.get_today_run()
-    if run:
-        c1, c2, c3, c4 = st.columns(4)
-        c1.metric("Phiên số", f"#{run['run_id']}")
-        c2.metric("Trạng thái", run["status"])
-        c3.metric("Cách chạy", run["trigger"] + (" (chạy lại)" if run["is_rerun"] else ""))
-        c4.metric("Số cảnh báo", run["alert_count"])
-        st.caption(f"Bắt đầu {fmt_dt(run['started_at'])} · kết thúc {fmt_dt(run['finished_at'])}")
-        if run.get("error"):
+    with st.container(border=True):
+        info, rerun_col, button_col = st.columns([5, 1.6, 1.6], vertical_alignment="center")
+        if run:
+            how = "⏰ Lịch 08:00" if run["trigger"] == "SCHEDULED" else "👤 Bấm tay"
+            if run["is_rerun"]:
+                how += " · Chạy lại"
+            info.markdown(f'<div class="run-line"><b>Phiên #{run["run_id"]}</b><br>'
+                          f'<span class="run-sub">{RUN_STATUS_LABELS.get(run["status"], run["status"])} · {how} · '
+                          f'{run["alert_count"]} cảnh báo · {fmt_dt(run["started_at"])}</span></div>',
+                          unsafe_allow_html=True)
+        elif is_manager(user):
+            info.markdown('<div class="run-line"><b>Hôm nay chưa chạy rà soát.</b> Bấm nút bên cạnh để chạy.</div>',
+                          unsafe_allow_html=True)
+        else:
+            info.markdown('<div class="run-line"><b>Hôm nay chưa chạy rà soát.</b> Quản lý sẽ chạy hoặc '
+                          'hệ thống tự chạy lúc 08:00.</div>', unsafe_allow_html=True)
+        if not is_manager(user):
+            rerun_col.caption("🔒 Chỉ quản lý chạy rà soát")
+        else:
+            rerun = rerun_col.checkbox("Chạy lại", key="rerun_flag",
+                                       help="Rà soát thêm lần nữa trong ngày") if run else False
+            if button_col.button("▶️ Chạy rà soát", type="primary", key="btn_run_audit"):
+                with st.spinner("Đang rà soát..."):
+                    result = api.run_morning_audit("MANUAL", rerun=rerun, user=user)
+                kind = {"SUCCEEDED": "success", "ALREADY_DONE": "info",
+                        "REJECTED_DUPLICATE": "warning", "FAILED": "error"}.get(result["status"], "info")
+                flash("tab2", kind, f"{result['status']}: {result['message']}")
+                st.session_state["tab2_view_next"] = "alerts"
+                st.rerun()
+        if run and run.get("error"):
             st.error(run["error"])
-    elif is_manager(user):
-        st.info("Hôm nay chưa chạy rà soát. Bấm nút bên dưới để chạy.")
-    else:
-        st.info("Hôm nay chưa chạy rà soát. Quản lý sẽ chạy rà soát hoặc hệ thống tự chạy lúc 08:00.")
-    if not is_manager(user):
-        st.caption(MANAGER_ONLY_NOTE)
-        return
-    rerun = st.checkbox("Chạy lại (rà soát thêm lần nữa trong ngày)", key="rerun_flag") if run else False
-    if st.button("▶️ Chạy rà soát", type="primary", key="btn_run_audit"):
-        with st.spinner("Đang rà soát..."):
-            result = api.run_morning_audit("MANUAL", rerun=rerun, user=user)
-        kind = {"SUCCEEDED": "success", "ALREADY_DONE": "info",
-                "REJECTED_DUPLICATE": "warning", "FAILED": "error"}.get(result["status"], "info")
-        flash("tab2", kind, f"{result['status']}: {result['message']}")
-        st.rerun()
 
 
 def render_options_table(alert):
@@ -466,13 +561,13 @@ def render_options_table(alert):
 def render_choice_form(alert, user):
     aid, unit = alert["alert_id"], alert["unit"]
     options = alert["options"]
-    st.markdown("**Quyết định của quản lý**")
     labels = {o["option"]: f"Phương án {o['option']} - {o['sup_name']}" for o in options}
-    letter = st.radio("Chọn phương án", list(labels), format_func=lambda k: labels[k],
+    c1, c2 = st.columns([3, 2])
+    letter = c1.radio("Chọn phương án", list(labels), format_func=lambda k: labels[k],
                       horizontal=True, key=f"opt_{aid}")
     opt = next(o for o in options if o["option"] == letter)
     moq = get_moq(alert["ingredient_id"], opt["sup_id"])
-    qty = st.number_input(f"Số lượng đặt ({unit})", min_value=0.0, value=float(opt["order_qty"]),
+    qty = c2.number_input(f"Số lượng đặt ({unit})", min_value=0.0, value=float(opt["order_qty"]),
                           step=float(moq), key=f"qty_{aid}_{letter}")
     final_qty = round_up_moq(qty, moq)
     if qty <= 0:
@@ -480,14 +575,14 @@ def render_choice_form(alert, user):
     elif final_qty != qty:
         st.info(f"Số lượng sẽ được làm tròn LÊN thành **{fmt_qty(final_qty)} {unit}** "
                 f"(MOQ của {opt['sup_name']} là {fmt_qty(moq)}).")
-    else:
-        st.caption(f"MOQ của {opt['sup_name']}: {fmt_qty(moq)} {unit}. Số lượng hợp lệ.")
-    st.caption(f"Tổng tiền dự kiến: {fmt_money(final_qty * opt['unit_price'])}")
-    c1, c2 = st.columns(2)
-    if c1.button("✅ Tạo PO nháp", type="primary", key=f"create_{aid}", disabled=qty <= 0):
+    st.caption(f"MOQ của {opt['sup_name']}: {fmt_qty(moq)} {unit} · "
+               f"Tổng tiền dự kiến: {fmt_money(final_qty * opt['unit_price'])}")
+    b1, b2, _ = st.columns([1.4, 1.4, 3])
+    if b1.button("✅ Tạo PO nháp", type="primary", key=f"create_{aid}", disabled=qty <= 0):
         run_action("tab2", lambda: api.create_draft_po(aid, letter, float(final_qty), user),
-                   lambda po_id: f"✅ Đã tạo PO nháp {po_id}. Hãy duyệt ở mục «PO cần xử lý» bên dưới.")
-    if c2.button("🚫 Bỏ qua cảnh báo", key=f"dismiss_{aid}"):
+                   lambda po_id: f"✅ Đã tạo PO nháp {po_id}. Đã chuyển sang mục «PO cần xử lý» để duyệt.",
+                   next_view=("tab2_view", "po"))
+    if b2.button("🚫 Bỏ qua", key=f"dismiss_{aid}"):
         run_action("tab2", lambda: api.dismiss_alert(aid, user),
                    f"Đã bỏ qua cảnh báo {alert['ingredient_name']}.")
 
@@ -498,121 +593,148 @@ def superseded_alert_ids():
             if is_auto_superseded(log) and str(log["entity_id"]).isdigit()}
 
 
-def render_alert_card(alert, user, superseded=frozenset()):
+def alert_title(alert, superseded=frozenset()):
+    """Dòng tóm tắt của một cảnh báo (nhãn của khung thu gọn)."""
+    name, unit = alert["ingredient_name"], alert["unit"]
+    cause = CAUSE_LABELS.get(alert["main_cause"], alert["main_cause"] or "")
+    status = alert["status"]
+    if status == "OPEN":
+        return f"⚠️ {name} · Thiếu {fmt_qty(alert['shortage_qty'])} {unit} · Nguyên nhân: {cause}"
+    if status == "SELECTED":
+        return f"🟡 {name} · Đã chọn phương án {alert['selected_option']} → {alert['po_id']}"
+    if status == "RESOLVED":
+        return f"🟢 {name} · Đã xử lý xong (PO {alert['po_id'] or '—'})"
+    if alert["alert_id"] in superseded:
+        return f"⚪ {name} · Hệ thống tự đóng (đã có phiên rà soát mới)"
+    return f"⚪ {name} · Đã bỏ qua"
+
+
+def render_alert_detail(alert, user):
     unit = alert["unit"]
-    with st.container(border=True):
-        st.markdown(f"### {alert['ingredient_name']}")
-        if alert["status"] == "DISMISSED" and alert["alert_id"] in superseded:
-            st.caption("⚪ Hệ thống tự đóng (đã có phiên rà soát mới)")
-        else:
-            st.caption(ALERT_STATUS_LABELS.get(alert["status"], alert["status"]))
-        c1, c2, c3 = st.columns(3)
-        c1.metric("Tồn dự kiến (3 ngày)", f"{fmt_qty(alert['projected_stock'])} {unit}")
-        c2.metric("Tồn tối thiểu", f"{fmt_qty(alert['min_stock'])} {unit}")
-        c3.metric("Cần bổ sung", f"{fmt_qty(alert['shortage_qty'])} {unit}")
+    parts = []
+    for c in alert["causes"]:
+        star = "⭐ " if c["code"] == alert["main_cause"] else ""
+        qty_text = f" {fmt_qty(c['qty'])}" if c.get("qty") is not None else ""
+        parts.append(f"{star}{CAUSE_LABELS.get(c['code'], c['code'])}{qty_text}")
+    st.markdown(f"**Nguyên nhân** ({unit}): " + " · ".join(parts))
+    st.markdown(f"Tồn dự kiến **{fmt_qty(alert['projected_stock'])} {unit}** · Tối thiểu "
+                f"{fmt_qty(alert['min_stock'])} {unit} · Cần bổ sung **{fmt_qty(alert['shortage_qty'])} {unit}**")
+    if alert.get("explanation"):
+        st.info(f"🤖 **Diễn giải của Gemini:** {pretty_text(alert['explanation'])}")
 
-        st.markdown("**Nguyên nhân** (mã do code tính, ⭐ = nguyên nhân chính)")
-        lines = []
-        for c in alert["causes"]:
-            star = "⭐ " if c["code"] == alert["main_cause"] else ""
-            qty_text = f": {fmt_qty(c['qty'])} {unit}" if c.get("qty") is not None else ""
-            lines.append(f"- {star}**{CAUSE_LABELS.get(c['code'], c['code'])}** ({c['code']}){qty_text}")
-        st.markdown("\n".join(lines))
+    if alert.get("open_po_id"):
+        st.warning(f"Nguyên liệu này đang có PO chưa xử lý ({alert['open_po_id']}). "
+                   "Hệ thống không đề xuất phương án mới, hãy xử lý PO đó ở mục «PO cần xử lý».")
+    elif not alert["options"]:
+        st.warning(alert.get("note") or "Cần xử lý thủ công")
+    else:
+        render_options_table(alert)
+        if alert.get("note"):
+            st.caption(f"ℹ️ {alert['note']}")
+        if alert.get("tradeoff_a"):
+            st.markdown(f"- **Đánh đổi A:** {pretty_text(alert['tradeoff_a'])}")
+        if alert.get("tradeoff_b"):
+            st.markdown(f"- **Đánh đổi B:** {pretty_text(alert['tradeoff_b'])}")
 
-        if alert.get("explanation"):
-            st.info(f"🤖 **Diễn giải của Gemini:** {pretty_text(alert['explanation'])}")
-
-        if alert.get("open_po_id"):
-            st.warning(f"Nguyên liệu này đang có PO chưa xử lý ({alert['open_po_id']}). "
-                       "Hệ thống không đề xuất phương án mới, hãy xử lý PO đó ở mục «PO cần xử lý».")
-        elif not alert["options"]:
-            st.warning(alert.get("note") or "Cần xử lý thủ công")
-        else:
-            render_options_table(alert)
-            if alert.get("note"):
-                st.caption(f"ℹ️ {alert['note']}")
-            if alert.get("tradeoff_a"):
-                st.markdown(f"- **Đánh đổi A:** {pretty_text(alert['tradeoff_a'])}")
-            if alert.get("tradeoff_b"):
-                st.markdown(f"- **Đánh đổi B:** {pretty_text(alert['tradeoff_b'])}")
-
-        status = alert["status"]
-        if status == "OPEN" and not is_manager(user):
-            st.caption(MANAGER_ONLY_NOTE)
-        elif status == "OPEN" and alert["options"]:
-            render_choice_form(alert, user)
-        elif status == "OPEN":
-            if st.button("🚫 Bỏ qua cảnh báo", key=f"dismiss_{alert['alert_id']}"):
-                run_action("tab2", lambda: api.dismiss_alert(alert["alert_id"], user), "Đã bỏ qua cảnh báo.")
-        elif status == "SELECTED":
-            st.info(f"Đã chọn phương án {alert['selected_option']}, số lượng "
-                    f"{fmt_qty(alert['selected_qty'])} {unit} → PO **{alert['po_id']}**.")
-        elif status == "RESOLVED":
-            st.success(f"Đã xử lý xong (PO {alert['po_id'] or '—'}).")
+    status = alert["status"]
+    if status == "OPEN" and not is_manager(user):
+        st.caption(MANAGER_ONLY_NOTE)
+    elif status == "OPEN" and alert["options"]:
+        render_choice_form(alert, user)
+    elif status == "OPEN":
+        if st.button("🚫 Bỏ qua", key=f"dismiss_{alert['alert_id']}"):
+            run_action("tab2", lambda: api.dismiss_alert(alert["alert_id"], user), "Đã bỏ qua cảnh báo.")
+    elif status == "SELECTED":
+        st.info(f"Đã chọn phương án {alert['selected_option']}, số lượng "
+                f"{fmt_qty(alert['selected_qty'])} {unit} → PO **{alert['po_id']}**. Xử lý ở mục «PO cần xử lý».")
 
 
-def render_po_card(po, ing_by_id, user):
+def render_alerts_view(alerts, user):
+    open_alerts = [a for a in alerts if a["status"] == "OPEN"]
+    selected = [a for a in alerts if a["status"] == "SELECTED"]
+    if not alerts:
+        st.info("Chưa có cảnh báo nào. Hãy chạy rà soát." if is_manager(user) else "Chưa có cảnh báo nào.")
+        return
+    if not open_alerts:
+        st.success("Không còn cảnh báo nào chờ quyết định.")
+    for i, alert in enumerate(open_alerts):
+        with st.expander(alert_title(alert), expanded=(i == 0)):
+            render_alert_detail(alert, user)
+    if selected:
+        st.caption("Đã chọn phương án, đang chờ xử lý PO:")
+        for alert in selected:
+            with st.expander(alert_title(alert)):
+                render_alert_detail(alert, user)
+
+
+def render_po_row(po, ing_by_id, user):
     pid = po["po_id"]
     ing = ing_by_id.get(po["ingredient_id"], {})
     with st.container(border=True):
-        left, right = st.columns([3, 2])
-        with left:
-            st.markdown(f"**{pid}** · {ing.get('name', po['ingredient_id'])} · "
-                        f"{fmt_qty(po['order_qty'])} {ing.get('unit', '')} · "
-                        f"{po.get('sup_name') or po['sup_id']} · {fmt_money(po['total_cost'])}")
-            st.caption(f"status: **{po['status']}** · tạo bởi {po['created_by']} lúc {fmt_dt(po['created_at'])}")
-            if po.get("last_send_error"):
-                st.error(f"Gửi thất bại (lần {po['send_attempts']}): {po['last_send_error']}")
-        with right:
-            if not is_manager(user):
-                st.caption(MANAGER_ONLY_NOTE)
-            elif po["status"] == "DRAFT":
-                reason = st.text_input("Lý do từ chối (không bắt buộc)", key=f"reason_{pid}")
-                b1, b2 = st.columns(2)
-                if b1.button("✅ Duyệt", type="primary", key=f"approve_{pid}"):
-                    run_action("tab2", lambda: api.approve_po(pid, user), f"✅ Đã duyệt {pid}. Có thể gửi PO.")
-                if b2.button("❌ Từ chối", key=f"reject_{pid}"):
+        text, b1, b2 = st.columns([5, 1.3, 1.3], vertical_alignment="center")
+        text.markdown(f"**{pid}** · {ing.get('name', po['ingredient_id'])} · "
+                      f"{fmt_qty(po['order_qty'])} {ing.get('unit', '')} · "
+                      f"{po.get('sup_name') or po['sup_id']} · {fmt_money(po['total_cost'])} · "
+                      f"{po_lifecycle_label(po)}")
+        if not is_manager(user):
+            b2.caption("🔒 Chờ quản lý")
+        elif po["status"] == "DRAFT":
+            if b1.button("✅ Duyệt", type="primary", key=f"approve_{pid}"):
+                run_action("tab2", lambda: api.approve_po(pid, user), f"✅ Đã duyệt {pid}. Có thể gửi PO.")
+            with b2.popover("❌ Từ chối"):
+                reason = st.text_input("Lý do (không bắt buộc)", key=f"reason_{pid}")
+                if st.button("Xác nhận từ chối", key=f"reject_{pid}"):
                     run_action("tab2", lambda: api.reject_po(pid, user, reason), f"Đã từ chối {pid}.")
-            elif po["status"] == "APPROVED":
-                retry = bool(po.get("last_send_error"))
-                b1, b2 = st.columns(2)
-                if b1.button("🔁 Gửi lại" if retry else "📤 Gửi PO", type="primary", key=f"send_{pid}"):
-                    run_action("tab2", lambda: api.send_po(pid, user),
-                               lambda path: f"✅ Đã gửi {pid}. File PO: {path}")
-                if b2.button("🗑 Hủy", key=f"cancel_{pid}"):
-                    run_action("tab2", lambda: api.cancel_po(pid, user), f"Đã hủy {pid}.")
+        elif po["status"] == "APPROVED":
+            retry = bool(po.get("last_send_error"))
+            if b1.button("🔁 Gửi lại" if retry else "📤 Gửi PO", type="primary", key=f"send_{pid}"):
+                run_action("tab2", lambda: api.send_po(pid, user),
+                           lambda path: f"✅ Đã gửi {pid}. File PO: {path}")
+            if b2.button("🗑 Hủy", key=f"cancel_{pid}"):
+                run_action("tab2", lambda: api.cancel_po(pid, user), f"Đã hủy {pid}.")
+        if po.get("last_send_error"):
+            st.error(f"Gửi thất bại (lần {po['send_attempts']}): {po['last_send_error']}")
+
+
+def render_po_view(active, ing_by_id, user):
+    if not active:
+        st.info("Không có PO nào đang chờ duyệt hoặc chờ gửi.")
+        return
+    st.caption("Nháp: Duyệt hoặc Từ chối · Đã duyệt: Gửi PO hoặc Hủy. PO đã gửi xem ở tab Kho › PO & nhận hàng.")
+    for po in active:
+        render_po_row(po, ing_by_id, user)
+
+
+def render_done_view(finished, user):
+    if not finished:
+        st.info("Chưa có cảnh báo nào đã xử lý hoặc đã bỏ qua.")
+        return
+    superseded = superseded_alert_ids()
+    for alert in finished:
+        with st.expander(alert_title(alert, superseded)):
+            render_alert_detail(alert, user)
 
 
 def render_tab2(user):
     show_flash("tab2")
     ing_by_id = {i["id"]: i for i in api.get_ingredients()}
     render_run_block(user)
-
-    st.divider()
-    st.subheader("Cảnh báo")
     alerts = api.list_alerts()
-    if not alerts:
-        st.info("Chưa có cảnh báo nào. Hãy chạy rà soát." if is_manager(user) else "Chưa có cảnh báo nào.")
-    pending = [a for a in alerts if a["status"] in ("OPEN", "SELECTED")]
+    active = [p for p in api.list_pos() if p["closed_reason"] is None and p["status"] in ("DRAFT", "APPROVED")]
     finished = [a for a in alerts if a["status"] in ("RESOLVED", "DISMISSED")]
-    for alert in pending:
-        render_alert_card(alert, user)
-    if alerts and not pending:
-        st.success("Không còn cảnh báo nào cần xử lý.")
-    if finished:
-        superseded = superseded_alert_ids()
-        with st.expander(f"Đã xử lý / đã bỏ qua ({len(finished)})"):
-            for alert in finished:
-                render_alert_card(alert, user, superseded)
-
-    st.divider()
-    st.subheader("PO cần xử lý" if is_manager(user) else "PO đang chờ quản lý duyệt / gửi")
-    active = [p for p in api.list_pos()
-              if p["closed_reason"] is None and p["status"] in ("DRAFT", "APPROVED")]
-    if not active:
-        st.info("Không có PO nào đang chờ duyệt hoặc chờ gửi.")
-    for po in active:
-        render_po_card(po, ing_by_id, user)
+    n_open = sum(1 for a in alerts if a["status"] == "OPEN")
+    po_label = "📝 PO cần xử lý" if is_manager(user) else "📝 PO chờ quản lý"
+    view = sub_nav("tab2_view", {
+        "alerts": f"🔔 Cảnh báo đang mở ({n_open})",
+        "po": f"{po_label} ({len(active)})",
+        "done": f"✅ Đã xử lý / bỏ qua ({len(finished)})",
+    }, "alerts")
+    if view == "alerts":
+        render_alerts_view(alerts, user)
+    elif view == "po":
+        render_po_view(active, ing_by_id, user)
+    else:
+        render_done_view(finished, user)
 
 
 # ===========================================================================
@@ -803,7 +925,7 @@ def render_tab4(user):
         run_rows = [{
             "Phiên": f"#{r['run_id']}", "Ngày": fmt_date(r["run_date"]),
             "Cách chạy": ("⏰ Lịch 08:00" if r["trigger"] == "SCHEDULED" else "👤 Bấm tay")
-                         + (" · chạy lại" if r["is_rerun"] else ""),
+                         + (" · Chạy lại" if r["is_rerun"] else ""),
             "Trạng thái": r["status"], "Bắt đầu": fmt_dt(r["started_at"]),
             "Kết thúc": fmt_dt(r["finished_at"]), "Số cảnh báo": str(r["alert_count"]),
             "Lỗi": r["error"] or "",
