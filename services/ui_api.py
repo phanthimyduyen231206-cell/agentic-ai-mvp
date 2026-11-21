@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import json
 
+from agent import tools as _tools
 from data import repository as _repo
 from services import audit_service as _audit
 from services import chat_service as _chat
@@ -54,6 +55,47 @@ def get_suppliers(ingredient_id) -> list[dict]:
 
 def fefo_projection(ingredient_id, days: int, at=None) -> dict:
     return _fefo.fefo_projection(ingredient_id, days, at or now())
+
+
+def stock_overview(days: int = 3) -> list[dict]:
+    """Bảng "Tồn kho & dự báo": tách tồn dự kiến thành từng phần của công thức.
+
+    Mọi con số lấy từ hàm có sẵn, giao diện KHÔNG tự tính:
+      on_hand    – lô còn hạn (repository.get_batches_fefo)
+      preorder   – đơn đặt trước trong `days` ngày   (tools.calc_preorder_demand)
+      daily / retail – bán lẻ mỗi ngày / cả kỳ       (tools.calc_preorder_demand)
+      incoming   – hàng PO đã gửi sắp về trong kỳ    (tools.check_delayed_po → by_ingredient)
+      expiring   – sẽ hết hạn trước khi kịp dùng     (fefo.fefo_projection)
+      projected  – tồn dự kiến sau `days` ngày       (fefo.fefo_projection)
+    `consistent` = các phần cộng trừ ra đúng `projected` (chỉ để giao diện cảnh báo nếu lệch).
+    """
+    at = now()
+    demand = {r["ingredient_id"]: r for r in _tools.calc_preorder_demand(days=days).get("items", [])}
+    incoming = {r["ingredient_id"]: float(r.get("incoming_stock") or 0)
+                for r in _tools.check_delayed_po(days=days).get("by_ingredient", [])}
+    rows = []
+    for ing in get_ingredients():
+        iid = ing["id"]
+        lots = _repo.get_batches_fefo(iid, at)
+        proj = _fefo.fefo_projection(iid, days, at)
+        need = demand.get(iid, {})
+        row = {
+            "ingredient_id": iid, "name": ing["name"], "unit": ing["unit"],
+            "on_hand": round(sum(float(b["qty"]) for b in lots), 6),
+            "preorder": float(need.get("preorder_demand") or 0),
+            "daily": float(need.get("daily_usage") or ing.get("daily_usage") or 0),
+            "retail": float(need.get("retail_demand") or 0),
+            "incoming": incoming.get(iid, 0.0),
+            "expiring": float(proj["expired_qty"]),
+            "projected": float(proj["projected_stock"]),
+            "min_stock": float(ing["min_stock"]),
+            "expired_lots": proj.get("expired", []),
+        }
+        total = row["on_hand"] - row["preorder"] - row["retail"] + row["incoming"] - row["expiring"]
+        row["consistent"] = abs(total - row["projected"]) < 1e-6
+        row["short"] = row["projected"] < row["min_stock"]
+        rows.append(row)
+    return rows
 
 
 def list_preorders(from_date=None, to_date=None) -> list[dict]:
