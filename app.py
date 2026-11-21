@@ -492,11 +492,20 @@ def render_choice_form(alert, user):
                    f"Đã bỏ qua cảnh báo {alert['ingredient_name']}.")
 
 
-def render_alert_card(alert, user):
+def superseded_alert_ids():
+    """Mã các cảnh báo bị hệ thống tự đóng vì có phiên rà soát mới (đọc từ nhật ký)."""
+    return {int(log["entity_id"]) for log in api.get_audit_logs(event_type="ALERT_DISMISSED")
+            if is_auto_superseded(log) and str(log["entity_id"]).isdigit()}
+
+
+def render_alert_card(alert, user, superseded=frozenset()):
     unit = alert["unit"]
     with st.container(border=True):
         st.markdown(f"### {alert['ingredient_name']}")
-        st.caption(ALERT_STATUS_LABELS.get(alert["status"], alert["status"]))
+        if alert["status"] == "DISMISSED" and alert["alert_id"] in superseded:
+            st.caption("⚪ Hệ thống tự đóng (đã có phiên rà soát mới)")
+        else:
+            st.caption(ALERT_STATUS_LABELS.get(alert["status"], alert["status"]))
         c1, c2, c3 = st.columns(3)
         c1.metric("Tồn dự kiến (3 ngày)", f"{fmt_qty(alert['projected_stock'])} {unit}")
         c2.metric("Tồn tối thiểu", f"{fmt_qty(alert['min_stock'])} {unit}")
@@ -591,12 +600,13 @@ def render_tab2(user):
     if alerts and not pending:
         st.success("Không còn cảnh báo nào cần xử lý.")
     if finished:
+        superseded = superseded_alert_ids()
         with st.expander(f"Đã xử lý / đã bỏ qua ({len(finished)})"):
             for alert in finished:
-                render_alert_card(alert, user)
+                render_alert_card(alert, user, superseded)
 
     st.divider()
-    st.subheader("PO cần xử lý")
+    st.subheader("PO cần xử lý" if is_manager(user) else "PO đang chờ quản lý duyệt / gửi")
     active = [p for p in api.list_pos()
               if p["closed_reason"] is None and p["status"] in ("DRAFT", "APPROVED")]
     if not active:
@@ -690,14 +700,23 @@ def fmt_entity(log, ing_by_id):
     return eid or "—"
 
 
-def describe_log(log, ing_by_id, sup_names, po_by_id):
-    """Một câu tiếng Việt ngắn tóm tắt sự kiện, dựng từ detail_json."""
+def log_detail(log):
+    """detail_json của một dòng nhật ký, đổi sang dict (lỗi hoặc rỗng thì trả {})."""
     try:
         d = json.loads(log["detail_json"] or "{}")
     except ValueError:
-        d = {}
-    if not isinstance(d, dict):
-        d = {}
+        return {}
+    return d if isinstance(d, dict) else {}
+
+
+def is_auto_superseded(log):
+    """Cảnh báo cũ bị hệ thống tự đóng vì đã có phiên rà soát mới (ALERT_DISMISSED + SUPERSEDED)."""
+    return log["event_type"] == "ALERT_DISMISSED" and log_detail(log).get("reason") == "SUPERSEDED"
+
+
+def describe_log(log, ing_by_id, sup_names, po_by_id):
+    """Một câu tiếng Việt ngắn tóm tắt sự kiện, dựng từ detail_json."""
+    d = log_detail(log)
     ing = ing_by_id.get(d.get("ingredient_id"), {})
     ing_name, unit = ing.get("name", d.get("ingredient_id", "")), ing.get("unit", "")
     qty = fmt_qty(d["qty"]) if isinstance(d.get("qty"), (int, float)) else d.get("qty")
@@ -709,6 +728,8 @@ def describe_log(log, ing_by_id, sup_names, po_by_id):
         return f"Rà soát {how}" + (" (chạy lại)" if d.get("rerun") else "")
     if ev == "RUN_SUCCEEDED":
         text = f"Có {d.get('alert_count', 0)} cảnh báo"
+        if d.get("superseded"):
+            text += f" · Đóng {len(d['superseded'])} cảnh báo cũ của phiên trước"
         return text + (" · Gemini không phản hồi, dùng câu mẫu" if d.get("fallback") else "")
     if ev in ("RUN_FAILED", "RUN_REJECTED_DUPLICATE", "PO_SEND_FAILED"):
         return d.get("error") or d.get("message") or d.get("reason") or ""
@@ -724,6 +745,8 @@ def describe_log(log, ing_by_id, sup_names, po_by_id):
     if ev == "PO_CANCELLED":
         return "Hủy PO đã duyệt, không gửi NCC"
     if ev == "ALERT_DISMISSED":
+        if is_auto_superseded(log):
+            return "Hệ thống tự đóng vì đã có phiên rà soát mới"
         return "Quản lý bỏ qua, không đặt hàng"
     if ev == "PO_CREATED":
         return f"{ing_name}: {qty} {unit} từ {sup}, tổng {fmt_money(d.get('total_cost') or 0)}"
@@ -736,8 +759,10 @@ def describe_log(log, ing_by_id, sup_names, po_by_id):
         return (f"Đã gửi đơn cho {sup_name} · hàng dự kiến về "
                 f"{fmt_date(d.get('expected_delivery_date'))} · file {file_name}")
     if ev == "STOCK_ISSUED":
+        stock_ing = ing_by_id.get(d.get("ingredient_id") or log["entity_id"], {})
+        what = " ".join(x for x in (str(qty), stock_ing.get("unit", ""), stock_ing.get("name", "")) if x)
         lots = "; ".join(f"{b['batch_id']} -{fmt_qty(b['taken'])}" for b in d.get("batches", []))
-        return f"Xuất {qty}, trừ lô: {lots}"
+        return f"Xuất {what}, trừ lô: {lots}"
     if ev == "BATCH_RECEIVED":
         return f"{qty} {unit} {ing_name} từ {d.get('po_id')}, hạn dùng {fmt_dt(d.get('expiry_date'))}"
     if ev == "DELIVERY_RECEIVED":
@@ -810,8 +835,9 @@ def render_tab4(user):
     rows = []
     for log in logs:
         row = {
-            "Thời điểm": fmt_dt(log["created_at"]), "Ai thực hiện": fmt_actor(log["actor"]),
-            "Sự kiện": EVENT_LABELS.get(log["event_type"], log["event_type"]),
+            "Thời điểm": fmt_dt(log["created_at"]), "Ai thực hiện": "⚙️ Hệ thống" if is_auto_superseded(log) else fmt_actor(log["actor"]),
+            "Sự kiện": "🔒 Tự đóng cảnh báo" if is_auto_superseded(log)
+                       else EVENT_LABELS.get(log["event_type"], log["event_type"]),
             "Đối tượng": fmt_entity(log, ing_by_id),
             "Nội dung": as_sentences(pretty_text(describe_log(log, ing_by_id, sup_names, po_by_id))),
         }
