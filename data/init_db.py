@@ -407,14 +407,37 @@ def init_db(db_path=DEFAULT_DB, scenario: str = "standard", now: datetime | None
     return db_path
 
 
+def load_env() -> None:
+    """Đọc file .env (DEMO_DATE, BAKERY_DB_PATH...) như app.py và scheduler.py.
+
+    Chỉ gọi khi chạy bằng lệnh, để dữ liệu mẫu dựng theo đúng DEMO_DATE mà app đang dùng.
+    Biến đã đặt sẵn trên cửa sổ lệnh được giữ nguyên (setdefault), test không bị ảnh hưởng.
+    """
+    env_path = ROOT / ".env"
+    if not env_path.exists():
+        return
+    with open(env_path, encoding="utf-8-sig") as f:
+        for line in f:
+            line = line.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            key, value = line.split("=", 1)
+            os.environ.setdefault(key.strip(), value.strip().strip('"').strip("'"))
+
+
 def main() -> None:
     sys.stdout.reconfigure(encoding="utf-8")  # để in được tiếng Việt trên cửa sổ lệnh Windows
+    load_env()
+    env_db = os.environ.get("BAKERY_DB_PATH", "").strip()
+    default_db = (ROOT / env_db) if env_db and not Path(env_db).is_absolute() else Path(env_db or DEFAULT_DB)
     parser = argparse.ArgumentParser(description="Tạo bakery.db và nạp dữ liệu mẫu")
     parser.add_argument("--scenario", choices=["standard", "no_shortage"], default="standard")
-    parser.add_argument("--db", default=str(DEFAULT_DB), help="đường dẫn file .db")
+    parser.add_argument("--db", default=str(default_db), help="đường dẫn file .db")
     args = parser.parse_args()
 
     path = init_db(args.db, args.scenario)
+    print(f"Giờ dựng dữ liệu: {get_now().isoformat(timespec='minutes')} "
+          f"(DEMO_DATE = {os.environ.get('DEMO_DATE') or 'trống, dùng giờ thật'})")
     conn = sqlite3.connect(path)
     tables = [r[0] for r in conn.execute(
         "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name")]
