@@ -202,6 +202,16 @@ Phần còn lại của cảnh báo lấy nguyên từ AlertDraft (Mục 5):
   Mã OPEN_PO, SUPPLIER_DELAY nếu không có số lượng thì để `"qty": null`.
 - `main_cause`, `projected_stock`, `shortage_qty`, `snapshot_hash` ← lấy đúng giá trị cùng tên trong AlertDraft.
 
+Đóng cảnh báo cũ khi có phiên mới (SUPERSEDED):
+- Khi một phiên rà soát chạy **SUCCEEDED** (kể cả không thiếu hàng), mọi cảnh báo **OPEN** của các phiên trước
+  chuyển **DISMISSED**, ghi `resolved_at`, cùng transaction với `RUN_SUCCEEDED`.
+- Mỗi cảnh báo bị đóng ghi log `ALERT_DISMISSED`, `actor = "system"`,
+  `detail = {"reason": "SUPERSEDED", "by_run": <run_id mới>}`. Log `RUN_SUCCEEDED` thêm khóa
+  `"superseded": [alert_id, ...]`.
+- Cảnh báo **SELECTED** (đã có PO đang xử lý), **RESOLVED**, **DISMISSED** giữ nguyên.
+- Quản lý tự bấm "Bỏ qua" (`dismiss_alert`, Mục 9) thì log `ALERT_DISMISSED` **không** có `reason = "SUPERSEDED"`;
+  giao diện dựa vào khóa này để ghi "Quản lý bỏ qua" hay "Hệ thống tự đóng".
+
 ## 11. Hàm cho giao diện – `services/ui_api.py` (Yến) và stubs
 
 `app.py` **chỉ import `services/ui_api.py`**. File này gom các hàm giao diện cần, gọi hàm thật ở các module khác và
