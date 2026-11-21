@@ -17,6 +17,8 @@ Các bước của 1 phiên rà soát:
    Có thiếu → core_agent.run_agent("MORNING_AUDIT") diễn giải (Gemini lỗi thì có câu mẫu dự phòng),
    lưu alerts OPEN theo contracts mục 10 (snapshot_hash tính bằng repository.compute_snapshot_hash – P03),
    log ALERT_CREATED từng cảnh báo, rồi RUN_SUCCEEDED.
+   Phiên thành công (kể cả không thiếu hàng) đóng cảnh báo OPEN của các phiên trước → DISMISSED,
+   log ALERT_DISMISSED (reason SUPERSEDED); cảnh báo SELECTED giữ nguyên.
 5. Lỗi bất kỳ ở bước 2–4 → phiên FAILED, ghi lỗi, log RUN_FAILED. Hàm không raise.
 
 recover_stale_runs(): gọi khi app/scheduler khởi động; phiên RUNNING quá 15 phút → FAILED,
@@ -207,11 +209,29 @@ def _save_alerts(run_id: int, drafts: list[dict], explained: dict[str, dict], ac
                                     "open_po_id": draft.get("open_po_id"), "note": draft.get("note")},
                             conn=conn)
             ids.append(alert_id)
+        superseded = _supersede_old_alerts(run_id, now, conn)
         repo.update_audit_run(run_id, {"status": "SUCCEEDED", "finished_at": now, "alert_count": len(ids)},
                               conn=conn)
         write_audit_log(actor, "RUN_SUCCEEDED", entity_type="audit_run", entity_id=run_id, run_id=run_id,
-                        detail={"alert_count": len(ids), **agent_detail}, conn=conn)
+                        detail={"alert_count": len(ids), "superseded": superseded, **agent_detail}, conn=conn)
     return ids
+
+
+def _supersede_old_alerts(run_id: int, now: str, conn) -> list[int]:
+    """Phiên mới đã tính lại số liệu: cảnh báo OPEN của các phiên trước → DISMISSED.
+
+    Cảnh báo SELECTED (đã có PO đang xử lý) và RESOLVED/DISMISSED giữ nguyên.
+    Gọi trong cùng transaction với RUN_SUCCEEDED: phiên thất bại thì không đóng gì.
+    """
+    closed = []
+    for a in repo.get_alerts(status="OPEN", conn=conn):
+        if a["run_id"] == run_id:
+            continue
+        repo.update_alert(a["alert_id"], {"status": "DISMISSED", "resolved_at": now}, conn=conn)
+        write_audit_log("system", "ALERT_DISMISSED", entity_type="alert", entity_id=a["alert_id"],
+                        run_id=run_id, detail={"reason": "SUPERSEDED", "by_run": run_id}, conn=conn)
+        closed.append(a["alert_id"])
+    return closed
 
 
 def _summarize_trace(trace: list[dict]) -> dict:
@@ -254,9 +274,12 @@ def run_morning_audit(trigger: Literal["SCHEDULED", "MANUAL"], rerun: bool = Fal
 
         if not drafts:
             now = _ts(clock.now())
-            repo.update_audit_run(run_id, {"status": "SUCCEEDED", "finished_at": now, "alert_count": 0})
-            write_audit_log(actor, "RUN_SUCCEEDED", entity_type="audit_run", entity_id=run_id, run_id=run_id,
-                            detail={"alert_count": 0})
+            with _tx() as conn:  # đóng cảnh báo cũ + SUCCEEDED trong 1 transaction
+                superseded = _supersede_old_alerts(run_id, now, conn)
+                repo.update_audit_run(run_id, {"status": "SUCCEEDED", "finished_at": now, "alert_count": 0},
+                                      conn=conn)
+                write_audit_log(actor, "RUN_SUCCEEDED", entity_type="audit_run", entity_id=run_id, run_id=run_id,
+                                detail={"alert_count": 0, "superseded": superseded}, conn=conn)
             return _result(run_id, "SUCCEEDED", [], "Rà soát xong: không có nguyên liệu thiếu.")
 
         trace: list[dict] = []
