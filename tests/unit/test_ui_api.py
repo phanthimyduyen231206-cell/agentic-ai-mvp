@@ -24,8 +24,14 @@ def test_get_moq_reads_supplier_table(db):
     assert ui_api.get_moq("BO_LAT", "NCC_CHINH") == 5.0
 
 
-def test_get_moq_unknown_supplier_defaults_to_1(db):
-    assert ui_api.get_moq("KEM_TUOI", "NCC_KHONG_CO") == 1.0
+def test_get_moq_unknown_supplier_returns_none(db):
+    # Không đoán MOQ = 1: thiếu dữ liệu NCC thì trả None để giao diện khóa nút Tạo PO
+    assert ui_api.get_moq("KEM_TUOI", "NCC_KHONG_CO") is None
+
+
+def test_get_moq_supplier_not_selling_this_ingredient_returns_none(db):
+    # Dữ liệu mẫu: Mascarpone chỉ có NCC Chính, NCC Hỏa tốc không bán
+    assert ui_api.get_moq("MASCARPONE", "NCC_HOA_TOC") is None
 
 
 @pytest.mark.parametrize("qty, moq, expected", [
@@ -36,8 +42,9 @@ def test_round_up_moq_same_as_calc(qty, moq, expected):
     assert ui_api.round_up_moq(qty, moq) == pytest.approx(calc.round_up_moq(qty, moq))
 
 
-def test_round_up_moq_invalid_moq_keeps_qty():
-    assert ui_api.round_up_moq(7, 0) == 7
+@pytest.mark.parametrize("moq", [None, 0])
+def test_round_up_moq_without_moq_keeps_qty(moq):
+    assert ui_api.round_up_moq(7, moq) == 7
 
 
 # ---- Cảnh báo mềm ------------------------------------------------------------

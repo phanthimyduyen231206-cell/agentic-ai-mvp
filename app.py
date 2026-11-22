@@ -554,20 +554,26 @@ def render_choice_form(alert, user):
     opt = next(o for o in options if o["option"] == letter)
     moq = api.get_moq(alert["ingredient_id"], opt["sup_id"])
     qty = c2.number_input(f"Số lượng đặt ({unit})", min_value=0.0, value=float(opt["order_qty"]),
-                          step=float(moq), key=f"qty_{aid}_{letter}")
-    final_qty = api.round_up_moq(qty, moq)
-    if qty <= 0:
-        st.warning("Số lượng phải lớn hơn 0.")
-    elif final_qty != qty:
-        st.info(f"Số lượng sẽ được làm tròn LÊN thành **{fmt_qty(final_qty)} {unit}** "
-                f"(MOQ của {opt['sup_name']} là {fmt_qty(moq)}).")
-    warning = api.order_qty_warning(final_qty, alert["shortage_qty"], unit)
-    if warning:
-        st.warning(f"⚠️ {warning} Bạn vẫn có thể tạo PO nếu đã cân nhắc.")
-    st.caption(f"MOQ của {opt['sup_name']}: {fmt_qty(moq)} {unit} · "
-               f"Tổng tiền dự kiến: {fmt_money(final_qty * opt['unit_price'])}")
+                          step=float(moq or 1.0), key=f"qty_{aid}_{letter}")
+    if moq is None:
+        # Thiếu dữ liệu NCC: không tự đoán MOQ, không tính tổng tiền, khóa nút Tạo PO.
+        st.error(f"Không tìm thấy thông tin MOQ của nhà cung cấp này ({opt['sup_name']}). "
+                 "Chưa thể tạo PO, hãy báo người quản trị kiểm tra dữ liệu NCC.")
+        final_qty = qty
+    else:
+        final_qty = api.round_up_moq(qty, moq)
+        if qty <= 0:
+            st.warning("Số lượng phải lớn hơn 0.")
+        elif final_qty != qty:
+            st.info(f"Số lượng sẽ được làm tròn LÊN thành **{fmt_qty(final_qty)} {unit}** "
+                    f"(MOQ của {opt['sup_name']} là {fmt_qty(moq)}).")
+        warning = api.order_qty_warning(final_qty, alert["shortage_qty"], unit)
+        if warning:
+            st.warning(f"⚠️ {warning} Bạn vẫn có thể tạo PO nếu đã cân nhắc.")
+        st.caption(f"MOQ của {opt['sup_name']}: {fmt_qty(moq)} {unit} · "
+                   f"Tổng tiền dự kiến: {fmt_money(final_qty * opt['unit_price'])}")
     b1, b2, _ = st.columns([1.4, 1.4, 3])
-    if b1.button("✅ Tạo PO nháp", type="primary", key=f"create_{aid}", disabled=qty <= 0):
+    if b1.button("✅ Tạo PO nháp", type="primary", key=f"create_{aid}", disabled=qty <= 0 or moq is None):
         run_action("tab2", lambda: api.create_draft_po(aid, letter, float(final_qty), user),
                    lambda po_id: f"✅ Đã tạo PO nháp {po_id}. Đã chuyển sang mục «PO cần xử lý» để duyệt.",
                    next_view=("tab2_view", "po"))

@@ -54,18 +54,20 @@ def get_suppliers(ingredient_id) -> list[dict]:
     return _repo.get_suppliers(ingredient_id)
 
 
-def get_moq(ingredient_id, sup_id) -> float:
-    """MOQ của một NCC cho một nguyên liệu (repository.get_suppliers). Không có thì 1."""
+def get_moq(ingredient_id, sup_id) -> float | None:
+    """MOQ của một NCC cho một nguyên liệu (repository.get_suppliers).
+    Không tìm thấy NCC hoặc MOQ không hợp lệ thì trả None (KHÔNG tự đoán MOQ = 1):
+    giao diện báo lỗi và khóa nút Tạo PO, tránh làm tròn và tính tổng tiền sai."""
     for s in _repo.get_suppliers(ingredient_id):
-        if s["sup_id"] == sup_id and s.get("moq"):
+        if s["sup_id"] == sup_id and s.get("moq") and float(s["moq"]) > 0:
             return float(s["moq"])
-    return 1.0
+    return None
 
 
-def round_up_moq(qty: float, moq: float) -> float:
+def round_up_moq(qty: float, moq: float | None) -> float:
     """Làm tròn LÊN bội số MOQ, dùng đúng hàm của calc (vd 23 với MOQ 10 -> 30).
-    Hàm ghi create_draft_po vẫn kiểm tra lại MOQ."""
-    if moq <= 0:
+    Không có MOQ thì giữ nguyên số lượng. Hàm ghi create_draft_po vẫn kiểm tra lại MOQ."""
+    if not moq or moq <= 0:
         return float(qty)
     return _calc.round_up_moq(qty, moq)
 
