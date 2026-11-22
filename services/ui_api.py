@@ -7,8 +7,8 @@ app.py CHỈ import file này. File này:
      `options_json`), lấy đánh đổi A/B từ `options[].tradeoff`, ghép tên nguyên liệu,
      đơn vị, mức tối thiểu và tên NCC.
 
-Không chứa luật nghiệp vụ: kiểm tra quyền, MOQ, trạng thái PO, chống chạy trùng...
-đều do hàm ghi tự làm. (Từ Y09 không còn hàm giả services/stubs.py.)
+Không chứa luật nghiệp vụ riêng: làm tròn MOQ gọi calc.round_up_moq; kiểm tra quyền,
+MOQ, trạng thái PO, chống chạy trùng... đều do hàm ghi tự làm.
 """
 from __future__ import annotations
 
@@ -17,6 +17,7 @@ import json
 from agent import tools as _tools
 from data import repository as _repo
 from services import audit_service as _audit
+from services import calc as _calc
 from services import chat_service as _chat
 from services import clock as _clock
 from services import fefo as _fefo
@@ -51,6 +52,41 @@ def get_batches_fefo(ingredient_id, at=None) -> list[dict]:
 
 def get_suppliers(ingredient_id) -> list[dict]:
     return _repo.get_suppliers(ingredient_id)
+
+
+def get_moq(ingredient_id, sup_id) -> float:
+    """MOQ của một NCC cho một nguyên liệu (repository.get_suppliers). Không có thì 1."""
+    for s in _repo.get_suppliers(ingredient_id):
+        if s["sup_id"] == sup_id and s.get("moq"):
+            return float(s["moq"])
+    return 1.0
+
+
+def round_up_moq(qty: float, moq: float) -> float:
+    """Làm tròn LÊN bội số MOQ, dùng đúng hàm của calc (vd 23 với MOQ 10 -> 30).
+    Hàm ghi create_draft_po vẫn kiểm tra lại MOQ."""
+    if moq <= 0:
+        return float(qty)
+    return _calc.round_up_moq(qty, moq)
+
+
+# Ngưỡng cảnh báo mềm: đặt ít hơn lượng cần bổ sung, hoặc gấp hơn 3 lần.
+OVER_ORDER_FACTOR = 3
+
+
+def order_qty_warning(qty: float, shortage_qty: float, unit: str = "") -> str | None:
+    """Câu cảnh báo vàng khi số lượng đặt bất thường; None nếu bình thường.
+    Chỉ nhắc nhở, KHÔNG chặn: quản lý vẫn được tạo PO."""
+    if qty <= 0 or not shortage_qty or shortage_qty <= 0:
+        return None
+    unit = f" {unit}" if unit else ""
+    if qty < shortage_qty:
+        return (f"Số lượng đặt ({qty:g}{unit}) ít hơn lượng cần bổ sung ({shortage_qty:g}{unit}), "
+                "có thể vẫn thiếu hàng.")
+    if qty > OVER_ORDER_FACTOR * shortage_qty:
+        return (f"Số lượng đặt ({qty:g}{unit}) gấp hơn {OVER_ORDER_FACTOR} lần lượng cần bổ sung "
+                f"({shortage_qty:g}{unit}), dễ tồn kho và hết hạn.")
+    return None
 
 
 def fefo_projection(ingredient_id, days: int, at=None) -> dict:
