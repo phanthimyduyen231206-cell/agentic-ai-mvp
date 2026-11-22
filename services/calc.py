@@ -16,7 +16,11 @@ Với mỗi nguyên liệu (H = 3 ngày, ngày 0 = ngày rà soát):
    Với mỗi NCC s: D = max(H, lead_time_days(s)), shortage(s) = max(0, min_stock − projected_stock(D)),
    order_qty = ceil(shortage(s) / moq) × moq.
 5. A = tổng chi phí thấp nhất (hòa → lead time ngắn hơn); B = lead time ngắn nhất (hòa → chi phí thấp hơn).
+   Còn hòa nữa thì chọn NCC có reliability cao hơn, cuối cùng theo sup_id.
    A trùng B hoặc chỉ 1 NCC hợp lệ → 1 phương án + note; không có NCC hợp lệ → note "Cần xử lý thủ công".
+   Có A và B: reason A = "Rẻ nhất, về chậm hơn B X giờ", reason B = "Nhanh nhất, đắt hơn A Y% (Zđ)".
+6. meets_earliest_preorder: arrival_at <= ngày giao đơn đặt trước sớm nhất lúc 07:00 (PREORDER_CUTOFF);
+   không có đơn đặt trước → true.
 """
 from __future__ import annotations
 
@@ -31,6 +35,7 @@ H = 3  # khoảng tính khi rà soát (đặc tả 5.3)
 _EPS = 1e-9
 _CAUSE_PRIORITY = ("PREORDER", "DAILY_USAGE", "EXPIRING_LOT", "SUPPLIER_DELAY")
 NOTE_MANUAL = "Cần xử lý thủ công"
+PREORDER_CUTOFF = time(7, 0)  # hàng phải về trước 07:00 ngày giao đơn đặt trước mới kịp làm bánh
 
 
 def _r(x: float) -> float:
@@ -148,22 +153,30 @@ def quote_suppliers(ingredient: dict, at: datetime, projections: dict[int, float
             "lead_time_hours": hours,
             "lead_time_days": lead_time_days(hours),
             "arrival_at": at + timedelta(hours=hours),
+            "reliability": float(s.get("reliability") or 0),  # chỉ dùng để phá hòa, không đưa vào options
         })
     return quotes
 
 
-def _fmt_reason_fastest(q: dict, at: datetime) -> str:
-    arrival: datetime = q["arrival_at"]
-    text = f"Giao nhanh nhất ({q['lead_time_hours']} giờ)"
-    if arrival.date() == at.date():
-        when = "sáng nay" if arrival.hour < 12 else "hôm nay"
-        return f"{text}, có hàng ngay trong {when}"
-    return f"{text}, hàng về {arrival:%H:%M} ngày {arrival:%d/%m}"
+def _cost_diff_pct(total_cost: float, cost_a: float) -> float:
+    return 0.0 if cost_a <= 0 else round((total_cost - cost_a) / cost_a * 100, 1) + 0.0
+
+
+def _fmt_money(value: float) -> str:
+    """Giống fmt_money của app: 275000 → "275.000đ"."""
+    return f"{value:,.0f}đ".replace(",", ".")
+
+
+def _meets_earliest_preorder(arrival: datetime, earliest_preorder: date | None) -> bool:
+    if earliest_preorder is None:
+        return True
+    return arrival <= datetime.combine(earliest_preorder, PREORDER_CUTOFF)
 
 
 def _option(letter: str, q: dict, cost_a: float, earliest_preorder: date | None, reason: str) -> dict:
+    """Một phương án theo contracts Mục 5. cost_diff_pct_vs_A của A luôn là 0."""
     arrival: datetime = q["arrival_at"]
-    diff = 0.0 if letter == "A" or cost_a <= 0 else round((q["total_cost"] - cost_a) / cost_a * 100, 1)
+    diff = 0.0 if letter == "A" else _cost_diff_pct(q["total_cost"], cost_a)
     return {
         "option": letter,
         "sup_id": q["sup_id"],
@@ -174,18 +187,24 @@ def _option(letter: str, q: dict, cost_a: float, earliest_preorder: date | None,
         "lead_time_hours": q["lead_time_hours"],
         "lead_time_days": q["lead_time_days"],
         "arrival_at": arrival.isoformat(timespec="seconds"),
-        "meets_earliest_preorder": earliest_preorder is None or arrival.date() <= earliest_preorder,
+        "meets_earliest_preorder": _meets_earliest_preorder(arrival, earliest_preorder),
         "cost_diff_pct_vs_A": diff + 0.0,
         "reason": reason,
     }
 
 
 def choose_options(quotes: list[dict], at: datetime, earliest_preorder: date | None) -> tuple[list[dict], str | None]:
-    """Chọn A/B theo đặc tả 5.4. Trả về (options, note)."""
+    """Chọn A/B theo đặc tả 5.4. Trả về (options, note).
+
+    Hòa sau các quy tắc của 5.4 thì chọn reliability cao hơn, rồi theo sup_id. `at` giữ trong chữ ký
+    để không đổi cách gọi; arrival_at đã được quote_suppliers tính sẵn.
+    """
     if not quotes:
         return [], NOTE_MANUAL
-    best_a = min(quotes, key=lambda q: (q["total_cost"], q["lead_time_hours"], q["sup_id"]))
-    best_b = min(quotes, key=lambda q: (q["lead_time_hours"], q["total_cost"], q["sup_id"]))
+    best_a = min(quotes, key=lambda q: (q["total_cost"], q["lead_time_hours"],
+                                        -q.get("reliability", 0.0), q["sup_id"]))
+    best_b = min(quotes, key=lambda q: (q["lead_time_hours"], q["total_cost"],
+                                        -q.get("reliability", 0.0), q["sup_id"]))
     cost_a = best_a["total_cost"]
 
     if len(quotes) == 1:
@@ -195,9 +214,13 @@ def choose_options(quotes: list[dict], at: datetime, earliest_preorder: date | N
         opt = _option("A", best_a, cost_a, earliest_preorder,
                       "Vừa rẻ nhất vừa nhanh nhất trong các NCC hợp lệ")
         return [opt], f"{best_a['sup_name']} vừa rẻ nhất vừa nhanh nhất nên chỉ có một phương án."
+    slower_hours = best_a["lead_time_hours"] - best_b["lead_time_hours"]
+    pct = _cost_diff_pct(best_b["total_cost"], cost_a)
+    reason_a = f"Rẻ nhất, về chậm hơn B {slower_hours:g} giờ"
+    reason_b = f"Nhanh nhất, đắt hơn A {pct:g}% ({_fmt_money(best_b['total_cost'] - cost_a)})"
     return [
-        _option("A", best_a, cost_a, earliest_preorder, "Tổng chi phí thấp nhất trong các NCC hợp lệ"),
-        _option("B", best_b, cost_a, earliest_preorder, _fmt_reason_fastest(best_b, at)),
+        _option("A", best_a, cost_a, earliest_preorder, reason_a),
+        _option("B", best_b, cost_a, earliest_preorder, reason_b),
     ], None
 
 

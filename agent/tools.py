@@ -2,7 +2,8 @@
 
 Chủ file: Quỳnh Anh (Q03). Chữ ký hàm: xem docs/contracts.md (Mục 6), logic: đặc tả Mục 4.
 
-- Chỉ đọc dữ liệu qua data/repository.py và services/fefo.py; không ghi DB, không gọi LLM.
+- Chỉ đọc dữ liệu qua data/repository.py và services/fefo.py; lead_time_days lấy từ services/calc.py
+  để tool và calc luôn ra cùng một số. Không ghi DB, không gọi LLM.
 - Mọi hàm nhận tham số dạng keyword (core_agent gọi `tools[name](**args)`) và trả `dict` JSON được
   (ngày giờ là chuỗi ISO có chữ T, số đã làm tròn).
 - Lỗi đầu vào không raise mà trả `{"ok": False, "error_code": ..., "message": ...}` để Gemini đọc được.
@@ -11,12 +12,11 @@ Chủ file: Quỳnh Anh (Q03). Chữ ký hàm: xem docs/contracts.md (Mục 6), 
 """
 from __future__ import annotations
 
-import math
 from datetime import date, datetime, time, timedelta
 from typing import Any, Callable
 
 from data import repository
-from services import clock
+from services import calc, clock
 from services.fefo import fefo_projection
 
 _EPS = 1e-9
@@ -112,11 +112,6 @@ def _safe(fn: Callable[[], dict]) -> dict:
         return fn()
     except _ToolInputError as e:
         return _error(e.code, e.message)
-
-
-def _lead_time_days(hours: Any) -> int:
-    """Số ngày lịch = ceil(lead_time_hours / 24) (đặc tả 5.1); giao trong ngày tính 1 ngày."""
-    return int(math.ceil(float(hours or 0) / 24))
 
 
 # ---------------------------------------------------------------------------
@@ -331,7 +326,8 @@ def check_delayed_po(ingredient_id: str | None = None, days: Any = 3) -> dict:
 # ---------------------------------------------------------------------------
 
 def compare_suppliers(ingredient_id: str) -> dict:
-    """Danh sách NCC bán nguyên liệu: đơn giá, lead_time_hours, lead_time_days, moq, reliability, active.
+    """Danh sách NCC bán nguyên liệu: đơn giá, lead_time_hours, lead_time_days (= calc.lead_time_days),
+    moq, reliability, active, has_contact_email (không trả địa chỉ email).
     Không xếp hạng (việc chọn A/B do calc.py làm)."""
     def run() -> dict:
         ing_id = _norm_id(ingredient_id)
@@ -343,7 +339,7 @@ def compare_suppliers(ingredient_id: str) -> dict:
             "name": s["name"],
             "price": _r(s["price"]),
             "lead_time_hours": _r(s["lead_time_hours"]),
-            "lead_time_days": _lead_time_days(s["lead_time_hours"]),
+            "lead_time_days": calc.lead_time_days(s["lead_time_hours"]),
             "moq": _r(s["moq"]),
             "reliability": _r(s["reliability"]),
             "active": bool(s["active"]),

@@ -43,6 +43,7 @@ Chạy rà soát **trước 20:00**, vì lô `KEM-L1` hết hạn lúc 20:00 hô
 - **Bơ lạt có đúng 2 NCC hợp lệ (TC04):** NCC Chính (250.000đ, MOQ 5, 24h) và NCC Hỏa tốc (287.500đ, MOQ 2, 2h). Thiếu 3 − (−10) = 13 kg → Chính đặt 15 kg (tổng 3.750.000đ), Hỏa tốc đặt 14 kg (tổng 4.025.000đ).
 - **Bột mì:** NCC Chính MOQ 10; NCC Ánh Dương MOQ 25 (thiếu 10 → phải đặt 25, minh họa làm tròn MOQ). NCC Hỏa tốc **trống contact_email**, nên không phải NCC hợp lệ (dùng cho TC11).
 - **Mascarpone:** chỉ NCC Chính bán → chỉ 1 phương án (TC12).
+- **Kịp đơn sớm nhất (quy tắc 07:00):** hàng phải về trước 07:00 ngày giao đơn đặt trước sớm nhất. NCC Chính giao 24h về 08:00 ngày 21/11, nên **phương án A của Kem tươi, Bơ lạt và Bột mì là Không kịp** (đơn sớm nhất giao 21/11); B của Kem tươi và Bơ lạt (Hỏa tốc, về 10:00 hôm nay) là Kịp; Mascarpone (đơn sớm nhất 22/11) là Kịp.
 - **Trứng (TC17):** TRUNG-L1 60 quả hết hạn sau 3 ngày, TRUNG-L2 90 quả hết hạn sau 10 ngày. Trên DB vừa tạo, xuất 80 quả → TRUNG-L1 = 0, TRUNG-L2 = 70.
 - **Không có PO DRAFT/APPROVED** trong dữ liệu ban đầu, nên không cảnh báo nào có mã OPEN_PO.
 
