@@ -184,6 +184,19 @@ def dismiss_alert(alert_id: int, user) -> None  # quản lý bấm "Bỏ qua": c
 
 Mã lỗi `GuardrailError.code`: QTY_INVALID, INGREDIENT_NOT_FOUND, SUPPLIER_INVALID, MOQ_VIOLATION, ALERT_NOT_OPEN, DUPLICATE_PO, NOT_MANAGER, INVALID_TRANSITION, SNAPSHOT_CHANGED, SEND_FAILED.
 
+### Đăng nhập – `services/auth.py` (Duyên, DU2)
+
+```python
+class LoginResult(NamedTuple): user: dict | None; message: str   # message là câu tiếng Việt cho giao diện
+def login_manager(name, pin) -> LoginResult   # tên bắt buộc; PIN riêng theo MANAGER_PINS, dự phòng MANAGER_PIN chung
+def login_staff(name) -> LoginResult          # nhân viên chỉ xem: không PIN, tên bắt buộc
+def manager_names() -> list[str]              # tên các quản lý đã cấu hình (để giao diện cho chọn)
+def is_configured() -> bool                   # đã có MANAGER_PINS hoặc MANAGER_PIN
+```
+- `.env`: `MANAGER_PINS=Tên:PIN,Tên:PIN`. Tên so không phân biệt hoa thường và khoảng trắng thừa; `user["username"]` là tên như trong cấu hình.
+- Sai PIN 5 lần liên tiếp thì tên đó bị khóa 5 phút (đếm trong bộ nhớ app, theo giờ thật, không theo DEMO_DATE). Đăng nhập đúng thì đếm lại từ đầu.
+- Thông báo không chứa PIN nào. Vai trò lấy từ kết quả đăng nhập, không từ tham số giao diện.
+
 ## 10. services/audit_service.py, chat_service.py – Mai Anh (M04, M05)
 
 ```python
@@ -235,6 +248,7 @@ stubs bị xóa ở việc Y09.
 | `issue_stock_fefo(...)` | `inventory_service.issue_stock_fefo` | |
 | `create_draft_po`, `approve_po`, `reject_po`, `cancel_po`, `send_po`, `mark_received`, `dismiss_alert` | `po_service` (Mục 9) | |
 | `GuardrailError` | `po_service.GuardrailError` | `app.py` bắt lỗi này để báo đỏ |
+| `login_manager(name, pin)`, `login_staff(name)`, `manager_names()` | `auth` (Mục 9, phần Đăng nhập) | Trang đăng nhập dùng; phiên lưu `result.user` |
 | `get_audit_logs(...)`, `get_audit_runs(...)` | `repository.get_audit_logs`, `repository.get_audit_runs` | Tab 4 Nhật ký |
 
 ## 12. Ghi nhận góp ý
