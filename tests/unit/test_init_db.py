@@ -132,3 +132,44 @@ def test_scenario_no_shortage(tmp_path):
     kem = c.execute("SELECT MIN(expiry_date) FROM inventory_batches WHERE ingredient_id='KEM_TUOI'").fetchone()[0]
     assert kem > "2026-11-23"  # không lô kem nào hết hạn trong 3 ngày
     c.close()
+
+
+# ---------------- PA1: danh sách sự kiện dùng chung với audit_log ----------------
+
+def test_event_types_dung_chung_voi_audit_log():
+    from data import init_db as init_mod
+    from services import audit_log
+    assert init_mod.EVENT_TYPES is audit_log.EVENT_TYPES
+
+
+def test_moi_su_kien_cua_audit_log_deu_ghi_duoc(conn):
+    from services.audit_log import EVENT_TYPES
+    for ev in EVENT_TYPES:
+        conn.execute("INSERT INTO audit_logs(created_at, actor, event_type) VALUES ('2026-11-20T08:00:00','t',?)", (ev,))
+    assert conn.execute("SELECT COUNT(*) FROM audit_logs").fetchone()[0] == len(EVENT_TYPES)
+
+
+def test_them_su_kien_moi_vao_audit_log_thi_check_tu_cap_nhat(tmp_path, monkeypatch):
+    """Giả lập DU1 thêm CHAT_FAILED vào audit_log: init_db dựng lại thì DB nhận mã mới."""
+    import importlib
+    from data import init_db as init_mod
+    from services import audit_log
+    monkeypatch.setattr(audit_log, "EVENT_TYPES", audit_log.EVENT_TYPES + ("SU_KIEN_THU",))
+    mod = importlib.reload(init_mod)
+    try:
+        c = sqlite3.connect(mod.init_db(tmp_path / "ev.db", now=NOW))
+        c.execute("INSERT INTO audit_logs(created_at, actor, event_type) VALUES ('x','t','SU_KIEN_THU')")
+        c.close()
+    finally:
+        monkeypatch.undo()
+        importlib.reload(init_mod)
+
+
+def test_chay_bang_lenh_tu_thu_muc_goc(tmp_path):
+    """python data/init_db.py vẫn chạy được sau khi import services.audit_log."""
+    import subprocess
+    root = Path(__file__).resolve().parents[2]
+    r = subprocess.run([sys.executable, "data/init_db.py", "--db", str(tmp_path / "cli.db")],
+                       cwd=root, capture_output=True, text=True, encoding="utf-8", errors="replace", env={**__import__("os").environ, "DEMO_DATE": "2026-11-20T08:00"})
+    assert r.returncode == 0, r.stderr
+    assert (tmp_path / "cli.db").exists()
