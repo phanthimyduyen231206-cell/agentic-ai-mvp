@@ -61,6 +61,20 @@ def test_moq_cho_phep_boi_so_lon_hon(db):
     assert po_service.create_draft_po(alert_id, "A", 20, MANAGER) == "PO-005"
 
 
+@pytest.mark.parametrize("option, expected", [("A", 15), ("B", 14)])
+def test_qty_none_lay_so_luong_de_xuat_cua_phuong_an(db, option, expected):
+    """DU1: không truyền số lượng thì dùng order_qty của phương án đã chọn."""
+    alert_id = make_alert("BO_LAT", BO_LAT_OPTIONS)
+    po_id = po_service.create_draft_po(alert_id, option, None, MANAGER)
+    assert repository.get_purchase_order(po_id)["order_qty"] == expected
+
+
+def test_qty_none_van_kiem_moq(db):
+    sai_moq = [dict(BO_LAT_OPTIONS[0], order_qty=13.0)]   # NCC Chính MOQ 5, 13 không phải bội số
+    alert_id = make_alert("BO_LAT", sai_moq)
+    _blocked("MOQ_VIOLATION", po_service.create_draft_po, alert_id, "A", None, MANAGER)
+
+
 def test_phuong_an_khong_co_trong_canh_bao(db):
     alert_id = make_alert("BO_LAT", BO_LAT_OPTIONS[:1])   # chỉ có A
     _blocked("SUPPLIER_INVALID", po_service.create_draft_po, alert_id, "B", 14, MANAGER)

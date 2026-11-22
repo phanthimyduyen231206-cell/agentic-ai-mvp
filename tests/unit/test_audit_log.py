@@ -43,3 +43,25 @@ def test_shares_caller_transaction(db):
     conn.rollback()
     assert conn.execute("SELECT COUNT(*) FROM audit_logs").fetchone()[0] == 0
     conn.close()
+
+
+def test_chat_failed_is_an_event_type():
+    """DU1: Gemini lỗi thì chat ghi CHAT_FAILED, tách khỏi CHAT_ANSWERED."""
+    from services.audit_log import EVENT_TYPES
+    assert "CHAT_FAILED" in EVENT_TYPES
+    assert len(EVENT_TYPES) == len(set(EVENT_TYPES))
+
+
+def test_own_connection_goes_through_repository(db, monkeypatch):
+    """DU1: tự mở kết nối qua repository.get_connection(), không gọi sqlite3.connect trực tiếp."""
+    import services.audit_log as audit_log
+    calls = []
+    real = audit_log.get_connection
+
+    def spy(*args, **kwargs):
+        calls.append(1)
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(audit_log, "get_connection", spy)
+    write_audit_log("system", "RUN_STARTED")
+    assert calls == [1]

@@ -154,21 +154,27 @@ def _run_write(user, action: str, entity_type, entity_id, work):
 # ---------------------------------------------------------------------------
 # 1. Tạo PO nháp sau khi quản lý chọn A/B
 # ---------------------------------------------------------------------------
-def create_draft_po(alert_id: int, option: str, qty: float, user) -> str:
+def _to_qty(value) -> float:
+    try:
+        q = float(value)
+    except (TypeError, ValueError):
+        raise GuardrailError("QTY_INVALID", "Số lượng đặt không hợp lệ.")
+    if not math.isfinite(q) or q <= 0:
+        raise GuardrailError("QTY_INVALID", "Số lượng đặt phải lớn hơn 0.")
+    return q
+
+
+def create_draft_po(alert_id: int, option: str, qty: float | None, user) -> str:
     """Kiểm tra guardrail Mục 8 rồi tạo PO DRAFT; trả po_id mới (vd "PO-005").
 
+    qty = None: dùng số lượng đề xuất (order_qty) của phương án đã chọn trong cảnh báo.
     Thứ tự kiểm tra: quyền -> số lượng -> cảnh báo còn OPEN / PO trùng -> nguyên liệu -> NCC
     trong options -> MOQ -> snapshot_hash. Lỗi nào cũng không ghi gì vào PO / cảnh báo.
     """
     def work(conn):
         _require_manager(user)
 
-        try:
-            q = float(qty)
-        except (TypeError, ValueError):
-            raise GuardrailError("QTY_INVALID", "Số lượng đặt không hợp lệ.")
-        if not math.isfinite(q) or q <= 0:
-            raise GuardrailError("QTY_INVALID", "Số lượng đặt phải lớn hơn 0.")
+        q = None if qty is None else _to_qty(qty)
 
         alert = repository.get_alert(alert_id, conn=conn)
         if alert is None:
@@ -198,6 +204,8 @@ def create_draft_po(alert_id: int, option: str, qty: float, user) -> str:
         chosen = next((o for o in options if o.get("option") == option), None)
         if option not in ("A", "B") or chosen is None:
             raise GuardrailError("SUPPLIER_INVALID", f"Phương án {option!r} không có trong cảnh báo này.")
+        if q is None:
+            q = _to_qty(chosen.get("order_qty"))
         sup_id = chosen.get("sup_id")
         supplier = _supplier_row(conn, sup_id, ingredient_id)
         if supplier is None or int(supplier["active"]) != 1:
@@ -409,7 +417,9 @@ def mark_received(po_id: str, qty: float, user, expiry_date=None) -> str:
     Chống nhận trùng: trong một giao dịch BEGIN IMMEDIATE, kiểm tra rồi đánh dấu PO RECEIVED ngay
     (lần bấm thứ hai sẽ thấy RECEIVED và bị chặn). Sau đó mới tạo lô; tạo lô lỗi thì trả PO về như cũ.
     """
-    from services import inventory_service   # import lúc gọi để không phụ thuộc vòng
+    # Import trong hàm là cần thiết: inventory_service import GuardrailError từ file này,
+    # import ở đầu file sẽ tạo vòng import po_service <-> inventory_service.
+    from services import inventory_service
 
     def claim(conn):
         _require_manager(user)

@@ -158,7 +158,8 @@ def receive_batch(po_id: str, qty: float, expiry_date: datetime | None = None) -
 
 ```python
 class GuardrailError(Exception): code: str; message: str
-def create_draft_po(alert_id: int, option: Literal["A", "B"], qty: float, user) -> str   # trả po_id mới, vd "PO-005"
+def create_draft_po(alert_id: int, option: Literal["A", "B"], qty: float | None, user) -> str   # trả po_id mới, vd "PO-005"
+                                                # qty = None: dùng order_qty đề xuất của phương án đã chọn (vẫn kiểm MOQ)
 def approve_po(po_id: str, user) -> None
 def reject_po(po_id: str, user, reason: str = "") -> None       # đóng PO: closed_reason = REJECTED; cảnh báo → RESOLVED
 def cancel_po(po_id: str, user) -> None                         # đóng PO: closed_reason = CANCELLED; cảnh báo → RESOLVED
@@ -191,6 +192,8 @@ def run_morning_audit(trigger: Literal["SCHEDULED", "MANUAL"], rerun: bool = Fal
 #  "alert_ids": [int], "message": str}
 def ask_chat(question: str, user) -> dict      # {"answer": str, "refused": bool}
 ```
+- Sự kiện `CHAT_FAILED` (Mục 7 đặc tả): chat dùng câu dự phòng vì Gemini lỗi; không ghi `CHAT_ANSWERED` cho trường hợp này.
+
 Lưu kết quả Gemini vào bảng `alerts` (bảng không có cột riêng cho đánh đổi):
 - `explanation` ← `explanation` của Gemini (hoặc câu mẫu dự phòng).
 - `options_json` ← danh sách phương án của calc, mỗi phương án thêm khóa `"tradeoff"`: A nhận `tradeoff_a`, B nhận `tradeoff_b`.
