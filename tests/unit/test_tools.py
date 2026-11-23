@@ -273,6 +273,19 @@ def test_compare_suppliers_lead_time_48h_and_missing_email(db):
     assert sups["NCC_CHINH"]["has_contact_email"] is True
 
 
+def test_compare_suppliers_lead_time_days_equals_calc(db):
+    from services import calc
+    for ing in ("BO_LAT", "BOT_MI", "KEM_TUOI", "TRUNG", "MASCARPONE"):
+        for s in compare_suppliers(ing)["suppliers"]:
+            assert s["lead_time_days"] == calc.lead_time_days(s["lead_time_hours"])
+
+
+def test_compare_suppliers_uses_calc_lead_time_days(db, monkeypatch):
+    from services import calc
+    monkeypatch.setattr(calc, "lead_time_days", lambda hours: 99)
+    assert {s["lead_time_days"] for s in compare_suppliers("BO_LAT")["suppliers"]} == {99}
+
+
 def test_compare_suppliers_mascarpone_single(db):
     assert [s["sup_id"] for s in compare_suppliers("MASCARPONE")["suppliers"]] == ["NCC_CHINH"]
 

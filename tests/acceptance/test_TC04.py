@@ -49,4 +49,7 @@ def test_tc04_two_options_rounded_to_moq(db):
     assert a["order_qty"] % 5 == 0 and b["order_qty"] % 2 == 0
     assert b["lead_time_hours"] < a["lead_time_hours"]
     assert b["cost_diff_pct_vs_A"] == pytest.approx(7.3)
-    assert a["meets_earliest_preorder"] is True and b["meets_earliest_preorder"] is True
+    # Croissant giao 21/11: A về 08:00 ngày 21 (sau mốc 07:00) → không kịp; B về 10:00 hôm nay → kịp.
+    assert a["meets_earliest_preorder"] is False and b["meets_earliest_preorder"] is True
+    assert a["reason"] == "Rẻ nhất, về chậm hơn B 22 giờ"
+    assert b["reason"] == "Nhanh nhất, đắt hơn A 7.3% (275.000đ)"
