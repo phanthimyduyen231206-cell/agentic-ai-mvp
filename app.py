@@ -1,14 +1,14 @@
-"""app.py - Giao diện Streamlit 4 tab (việc Y01, Y02, Y03, Y09).
+"""app.py - Giao diện Streamlit 4 tab: Kho, Rà soát, Hỏi đáp, Nhật ký (Yến).
 
 Chạy:  streamlit run app.py
 
 Nguyên tắc: file này CHỈ nhận thao tác và hiển thị, KHÔNG chứa luật nghiệp vụ
 (tính tồn, chọn A/B, kiểm tra quyền... đều do services/ làm). Mọi hàm backend
-lấy qua services/ui_api.py (contracts Mục 11). Chạy data/init_db.py trước lần đầu.
+lấy qua services/ui_api.py (contracts Mục 11), kể cả MOQ và cảnh báo số lượng.
+Chạy data/init_db.py trước lần đầu.
 """
 import hmac
 import json
-import math
 import os
 import re
 from datetime import date, datetime, timedelta
@@ -22,14 +22,14 @@ from services import ui_api as api
 
 st.set_page_config(page_title="Trợ lý cung ứng tiệm bánh", page_icon="🥐", layout="wide")
 
-# Font Be Vietnam Pro (dấu tiếng Việt đẹp) + vài chỉnh nhỏ cho đồng bộ màu với .streamlit/config.toml.
-# Không có mạng thì trình duyệt tự dùng font mặc định, app vẫn chạy bình thường.
+# Font Be Vietnam Pro (tải từ Google Fonts) + vài chỉnh nhỏ cho đồng bộ màu với .streamlit/config.toml.
+# Mất mạng thì dùng font dự phòng có sẵn trên máy: Segoe UI (Windows), Roboto, Arial.
 st.markdown("""
 <style>
 @import url('https://fonts.googleapis.com/css2?family=Be+Vietnam+Pro:wght@400;500;600;700&display=swap');
 .stApp, .stApp p, .stApp li, .stApp label, .stApp input, .stApp textarea, .stApp button,
 .stApp h1, .stApp h2, .stApp h3, .stApp h4, [data-testid="stMetricValue"], [data-testid="stMetricLabel"] {
-    font-family: 'Be Vietnam Pro', sans-serif;
+    font-family: 'Be Vietnam Pro', 'Segoe UI', Roboto, Arial, sans-serif;
 }
 .stApp h1 { color: #7C2D12; font-weight: 700; }
 .stApp h2, .stApp h3 { color: #7C2D12; font-weight: 600; }
@@ -47,7 +47,7 @@ button[data-baseweb="tab"] p, [data-testid="stTab"] p { font-size: 1rem; font-we
 .bk-table tbody tr:last-child td { border-bottom: none; }
 /* Dòng phiên rà soát ở Tab Rà soát: chữ và nút to hơn, 3 phần thẳng hàng giữa */
 [data-testid="stMarkdownContainer"]:has(.run-line) { margin-bottom: 0 !important; }
-.run-line { font-family: 'Be Vietnam Pro', sans-serif; font-size: 1.25rem; line-height: 1.5; margin: 0; }
+.run-line { font-family: 'Be Vietnam Pro', 'Segoe UI', Roboto, Arial, sans-serif; font-size: 1.25rem; line-height: 1.5; margin: 0; }
 .run-line .run-sub { font-size: 1.05rem; white-space: nowrap; }
 .st-key-rerun_flag, .st-key-btn_run_audit { display: flex; align-items: center; justify-content: center; }
 .st-key-rerun_flag label p { font-size: 1.1rem; }
@@ -162,7 +162,7 @@ def run_action(tab, action, ok_message, next_view=None):
         if next_view:
             st.session_state[next_view[0] + "_next"] = next_view[1]
     except api.GuardrailError as err:
-        flash(tab, "error", f"⛔ Bị chặn [{err.code}]: {err.message}")
+        flash(tab, "error", f"⛔ Bị chặn: {err.message}")
     st.rerun()
 
 
@@ -191,7 +191,7 @@ def render_login():
     if submitted:
         if role == "MANAGER":
             if not expected_pin:
-                st.error("Chưa có MANAGER_PIN trong file .env. Hãy mở file .env và thêm dòng MANAGER_PIN=1234.")
+                st.error("Chưa cài mã PIN quản lý (biến MANAGER_PIN trong file .env). Hãy báo người quản trị hệ thống.")
                 return
             if not hmac.compare_digest(pin.encode("utf-8"), expected_pin.encode("utf-8")):
                 st.error("Sai mã PIN.")
@@ -476,7 +476,7 @@ def render_po_list_and_receive(ing_by_id, now, user):
                 f"{x} - {ing_by_id.get(po_by_id[x]['ingredient_id'], {}).get('name', '')} - "
                 f"{fmt_qty(po_by_id[x]['order_qty'])} "
                 f"({DELIVERY_LABELS.get(po_by_id[x]['delivery_status'], po_by_id[x]['delivery_status'])})"))
-        st.caption("MVP: nhận một lần đủ số lượng đặt.")
+        st.caption("Nhận một lần đủ số lượng đặt.")
         use_expiry = st.checkbox(
             "Nhập hạn dùng in trên bao bì (nếu bỏ trống, hệ thống tự tính theo hạn dùng mặc định)",
             key="recv_use_expiry")
@@ -494,20 +494,6 @@ def render_po_list_and_receive(ing_by_id, now, user):
 # ===========================================================================
 # ====== TAB 2: RÀ SOÁT ======
 # ===========================================================================
-def get_moq(ingredient_id, sup_id):
-    for s in api.get_suppliers(ingredient_id):
-        if s["sup_id"] == sup_id and s.get("moq"):
-            return float(s["moq"])
-    return 1.0
-
-
-def round_up_moq(qty, moq):
-    """Làm tròn LÊN theo bội số MOQ (vd 23 với MOQ 10 -> 30). Hàm ghi sẽ kiểm tra lại."""
-    if qty <= 0 or moq <= 0:
-        return qty
-    return round(math.ceil(round(qty / moq, 9)) * moq, 6)
-
-
 def render_run_block(user):
     """Thông tin phiên rà soát hôm nay gọn trong 1 dòng, nút chạy ngay bên cạnh."""
     run = api.get_today_run()
@@ -537,7 +523,7 @@ def render_run_block(user):
                     result = api.run_morning_audit("MANUAL", rerun=rerun, user=user)
                 kind = {"SUCCEEDED": "success", "ALREADY_DONE": "info",
                         "REJECTED_DUPLICATE": "warning", "FAILED": "error"}.get(result["status"], "info")
-                flash("tab2", kind, f"{result['status']}: {result['message']}")
+                flash("tab2", kind, result["message"])
                 st.session_state["tab2_view_next"] = "alerts"
                 st.rerun()
         if run and run.get("error"):
@@ -566,19 +552,28 @@ def render_choice_form(alert, user):
     letter = c1.radio("Chọn phương án", list(labels), format_func=lambda k: labels[k],
                       horizontal=True, key=f"opt_{aid}")
     opt = next(o for o in options if o["option"] == letter)
-    moq = get_moq(alert["ingredient_id"], opt["sup_id"])
+    moq = api.get_moq(alert["ingredient_id"], opt["sup_id"])
     qty = c2.number_input(f"Số lượng đặt ({unit})", min_value=0.0, value=float(opt["order_qty"]),
-                          step=float(moq), key=f"qty_{aid}_{letter}")
-    final_qty = round_up_moq(qty, moq)
-    if qty <= 0:
-        st.warning("Số lượng phải lớn hơn 0.")
-    elif final_qty != qty:
-        st.info(f"Số lượng sẽ được làm tròn LÊN thành **{fmt_qty(final_qty)} {unit}** "
-                f"(MOQ của {opt['sup_name']} là {fmt_qty(moq)}).")
-    st.caption(f"MOQ của {opt['sup_name']}: {fmt_qty(moq)} {unit} · "
-               f"Tổng tiền dự kiến: {fmt_money(final_qty * opt['unit_price'])}")
+                          step=float(moq or 1.0), key=f"qty_{aid}_{letter}")
+    if moq is None:
+        # Thiếu dữ liệu NCC: không tự đoán MOQ, không tính tổng tiền, khóa nút Tạo PO.
+        st.error(f"Không tìm thấy thông tin MOQ của nhà cung cấp này ({opt['sup_name']}). "
+                 "Chưa thể tạo PO, hãy báo người quản trị kiểm tra dữ liệu NCC.")
+        final_qty = qty
+    else:
+        final_qty = api.round_up_moq(qty, moq)
+        if qty <= 0:
+            st.warning("Số lượng phải lớn hơn 0.")
+        elif final_qty != qty:
+            st.info(f"Số lượng sẽ được làm tròn LÊN thành **{fmt_qty(final_qty)} {unit}** "
+                    f"(MOQ của {opt['sup_name']} là {fmt_qty(moq)}).")
+        warning = api.order_qty_warning(final_qty, alert["shortage_qty"], unit)
+        if warning:
+            st.warning(f"⚠️ {warning} Bạn vẫn có thể tạo PO nếu đã cân nhắc.")
+        st.caption(f"MOQ của {opt['sup_name']}: {fmt_qty(moq)} {unit} · "
+                   f"Tổng tiền dự kiến: {fmt_money(final_qty * opt['unit_price'])}")
     b1, b2, _ = st.columns([1.4, 1.4, 3])
-    if b1.button("✅ Tạo PO nháp", type="primary", key=f"create_{aid}", disabled=qty <= 0):
+    if b1.button("✅ Tạo PO nháp", type="primary", key=f"create_{aid}", disabled=qty <= 0 or moq is None):
         run_action("tab2", lambda: api.create_draft_po(aid, letter, float(final_qty), user),
                    lambda po_id: f"✅ Đã tạo PO nháp {po_id}. Đã chuyển sang mục «PO cần xử lý» để duyệt.",
                    next_view=("tab2_view", "po"))
@@ -891,7 +886,7 @@ def describe_log(log, ing_by_id, sup_names, po_by_id):
         return f"Nhận {qty}, tạo lô {d.get('batch_id')}"
     if ev == "GUARDRAIL_BLOCKED":
         action = ACTION_LABELS.get(d.get("action"), d.get("action") or "thao tác")
-        return f"Chặn khi {action} [{d.get('code')}] · {d.get('message', '')}"
+        return f"Chặn khi {action} · {d.get('message', '')}"
     if ev == "CHAT_ANSWERED":
         return f"Hỏi: «{d.get('question', '')}»"
     if ev == "CHAT_REFUSED":
@@ -926,11 +921,11 @@ def render_tab4(user):
             "Phiên": f"#{r['run_id']}", "Ngày": fmt_date(r["run_date"]),
             "Cách chạy": ("⏰ Lịch 08:00" if r["trigger"] == "SCHEDULED" else "👤 Bấm tay")
                          + (" · Chạy lại" if r["is_rerun"] else ""),
-            "Trạng thái": r["status"], "Bắt đầu": fmt_dt(r["started_at"]),
+            "Trạng thái": RUN_STATUS_LABELS.get(r["status"], r["status"]), "Bắt đầu": fmt_dt(r["started_at"]),
             "Kết thúc": fmt_dt(r["finished_at"]), "Số cảnh báo": str(r["alert_count"]),
             "Lỗi": r["error"] or "",
         } for r in runs]
-        show_table(styled_table(pd.DataFrame(run_rows), ("Trạng thái", "FAILED", RED_STYLE)))
+        show_table(styled_table(pd.DataFrame(run_rows), ("Trạng thái", "❌", RED_STYLE)))
     else:
         st.info("Chưa có phiên rà soát nào.")
 
@@ -938,7 +933,7 @@ def render_tab4(user):
     c1, c2, c3 = st.columns([3, 1, 1])
     event = c1.selectbox(
         "Lọc theo loại sự kiện", ["__ALL__"] + list(api.list_event_types()), key="log_filter",
-        format_func=lambda e: "Tất cả" if e == "__ALL__" else f"{EVENT_LABELS.get(e, e)} ({e})")
+        format_func=lambda e: "Tất cả" if e == "__ALL__" else EVENT_LABELS.get(e, e))
     limit = c2.selectbox("Số dòng", [50, 200, 1000], key="log_limit")
     show_raw = c3.checkbox("Hiện mã kỹ thuật", key="log_raw",
                            help="Thêm cột event_type và dữ liệu gốc (detail_json).")
