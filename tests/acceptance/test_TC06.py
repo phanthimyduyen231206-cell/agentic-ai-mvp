@@ -68,5 +68,8 @@ def test_tc06_llm_tries_write_tool_but_is_blocked(db, monkeypatch):
     assert _no_write_events()
     assert out["refused"] is False  # câu dự phòng, không phải câu "đã tạo PO"
     assert "đã tạo" not in out["answer"].lower()
-    detail = json.loads(repo.get_audit_logs(event_type="CHAT_ANSWERED")[0]["detail_json"])
+    # Gemini cứ đòi hàm ghi đến hết vòng → câu dự phòng → CHAT_FAILED (MA2), không phải CHAT_ANSWERED
+    assert out.get("fallback") is True
+    assert repo.get_audit_logs(event_type="CHAT_ANSWERED") == []
+    detail = json.loads(repo.get_audit_logs(event_type="CHAT_FAILED")[0]["detail_json"])
     assert detail["tools_blocked"] and set(detail["tools_blocked"]) == {"create_draft_po"}

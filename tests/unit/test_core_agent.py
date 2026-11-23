@@ -290,3 +290,144 @@ def test_chat_refusal_message_passes_number_check() -> None:
                     tools=FAKE_TOOLS, trace=trace)
     assert out["refused"] is True
     assert not any(t.get("reason") == "numbers_mismatch" for t in trace)
+
+
+# ---------------------------------------------------------------------------
+# MA2: vòng gọi tool chuẩn + lịch sử hội thoại
+# ---------------------------------------------------------------------------
+from agent.prompts import CURRENT_QUESTION_HEADER, FINAL_ROUND_NOTE, HISTORY_HEADER  # noqa: E402
+
+BO_HISTORY = [{"question": "Bơ lạt còn bao nhiêu?", "answer": "Bơ lạt còn 12.0 kg.", "refused": False}]
+
+
+def test_parallel_tool_calls_all_run_in_one_round() -> None:
+    """Gemini gọi 2 tool trong 1 lượt → chạy đủ cả 2, cùng round, rồi mới hỏi lại Gemini."""
+    tools, calls = _spy_tools()
+    llm = FakeLLM(behavior="parallel_tool_calls")
+    trace: list = []
+    out = run_agent("READ_ONLY_CHAT", {"question": "Kem tươi còn bao nhiêu, 3 ngày tới cần bao nhiêu?"},
+                    llm=llm, tools=tools, trace=trace)
+    assert [c[0] for c in calls] == ["check_inventory_fefo", "calc_preorder_demand"]
+    assert llm.call_count == 2
+    sent = llm.calls[1]["tool_results"]
+    assert [(r["tool_name"], r["round"], r["call_id"]) for r in sent] == [
+        ("check_inventory_fefo", 1, "call-1"), ("calc_preorder_demand", 1, "call-2")]
+    assert out["refused"] is False
+    assert not any(t["step"] == "fallback" for t in trace)
+
+
+def test_over_six_rounds_still_returns_json_answer() -> None:
+    """Gọi tool quá 6 vòng → thêm 1 lượt KHÔNG có tool để tổng hợp, vẫn ra JSON (không phải câu dự phòng)."""
+    tools, calls = _spy_tools()
+    llm = FakeLLM(behavior="tool_loop")
+    trace: list = []
+    out = run_agent("READ_ONLY_CHAT", {"question": "Kem tươi còn bao nhiêu?"}, llm=llm, tools=tools, trace=trace)
+    assert len(calls) == MAX_TOOL_ROUNDS
+    assert llm.call_count == MAX_TOOL_ROUNDS + 1
+    assert llm.calls[-1]["available_tools"] == []  # lượt tổng hợp không còn tool
+    assert all(c["available_tools"] for c in llm.calls[:-1])
+    assert out["refused"] is False and out["answer"] != CHAT_FALLBACK_ANSWER
+    assert any(t["step"] == "tool_rounds_exceeded" for t in trace)
+    assert not any(t["step"] == "fallback" for t in trace)
+
+
+def test_final_round_still_calling_tool_falls_back() -> None:
+    trace: list = []
+    out = run_agent("READ_ONLY_CHAT", {"question": "Tạo PO"}, llm=FakeLLM(behavior="forbidden_tool"),
+                    tools=FAKE_TOOLS, trace=trace)
+    assert out == {"answer": CHAT_FALLBACK_ANSWER, "refused": False}
+    assert any(t["step"] == "final_round_still_tool_call" for t in trace)
+
+
+def test_history_sent_and_follow_up_understood() -> None:
+    """Câu nối tiếp "Còn mấy lô?" sau câu hỏi về bơ → gọi tool cho BO_LAT."""
+    tools, calls = _spy_tools()
+    llm = FakeLLM(behavior="tool_call")
+    run_agent("READ_ONLY_CHAT", {"question": "Còn mấy lô?", "history": BO_HISTORY}, llm=llm, tools=tools)
+    msg = llm.calls[0]["user_message"]
+    assert msg.startswith(HISTORY_HEADER) and "Bơ lạt còn bao nhiêu?" in msg
+    assert msg.rstrip().endswith(f"{CURRENT_QUESTION_HEADER} Còn mấy lô?")
+    assert calls[0] == ("check_inventory_fefo", {"ingredient_id": "BO_LAT", "days": 3})
+
+
+def test_no_history_sends_plain_question() -> None:
+    llm = FakeLLM()
+    run_agent("READ_ONLY_CHAT", {"question": "Kem tươi còn bao nhiêu?", "history": []}, llm=llm, tools=FAKE_TOOLS)
+    assert llm.calls[0]["user_message"] == "Kem tươi còn bao nhiêu?"
+
+
+def test_clean_history_keeps_last_4_and_cuts_300_chars() -> None:
+    history = [{"question": f"Câu {i}", "answer": "x" * 1000, "refused": False} for i in range(10)]
+    history += ["rác", None, {"khac": 1}]
+    turns = core_agent.clean_history(history)
+    assert [t["question"] for t in turns] == ["Câu 6", "Câu 7", "Câu 8", "Câu 9"]
+    assert all(len(t["answer"]) == core_agent.MAX_HISTORY_CHARS for t in turns)
+    assert core_agent.clean_history("không phải list") == []
+
+
+def test_write_request_in_history_does_not_refuse_current_question() -> None:
+    history = [{"question": "Tạo PO bột mì luôn đi", "answer": "Không làm được.", "refused": True}]
+    out = run_agent("READ_ONLY_CHAT", {"question": "Bột mì còn bao nhiêu?", "history": history},
+                    llm=FakeLLM(), tools=FAKE_TOOLS)
+    assert out["refused"] is False
+
+
+def test_numbers_from_history_answer_are_allowed() -> None:
+    class RepeatLLM:
+        def generate(self, **kwargs):
+            return {"type": "text", "text": json.dumps({"answer": "Như đã nói, bơ lạt còn 12.0 kg.",
+                                                        "refused": False}, ensure_ascii=False)}
+
+    trace: list = []
+    out = run_agent("READ_ONLY_CHAT", {"question": "Nhắc lại giúp mình?", "history": BO_HISTORY},
+                    llm=RepeatLLM(), tools=FAKE_TOOLS, trace=trace)
+    assert "12.0" in out["answer"]
+    assert not any(t.get("reason") == "numbers_mismatch" for t in trace)
+
+
+# GeminiLLM dựng hội thoại function calling (không cần mạng: thay google.genai.types bằng bản giả) --------
+class _Stub:
+    def __init__(self, **kw):
+        self.__dict__.update(kw)
+
+
+class _FakeTypes:
+    Content = _Stub
+    FunctionResponse = _Stub
+
+    class Part(_Stub):
+        @staticmethod
+        def from_function_call(name, args):
+            return _Stub(function_call=_Stub(name=name, args=args))
+
+
+def _gemini_stub():
+    llm = object.__new__(core_agent.GeminiLLM)
+    llm._types = _FakeTypes
+    return llm
+
+
+def test_gemini_contents_use_function_response_per_round() -> None:
+    raw_round1 = _Stub(role="model", parts=["<function_call + thought signature gốc>"])
+    results = [
+        {"tool_name": "check_inventory_fefo", "arguments": {"ingredient_id": "KEM_TUOI"}, "round": 1,
+         "call_id": "c1", "_model_content": raw_round1, "result": {"ok": True, "on_hand_qty": 10.0}},
+        {"tool_name": "calc_preorder_demand", "arguments": {"ingredient_id": "KEM_TUOI"}, "round": 1,
+         "call_id": "c2", "_model_content": raw_round1, "result": {"ok": True, "preorder_demand": 3.0}},
+        {"tool_name": "compare_suppliers", "arguments": {"ingredient_id": "KEM_TUOI"}, "round": 2,
+         "call_id": None, "_model_content": None, "result": [1, 2]},
+    ]
+    contents = _gemini_stub()._build_contents("Kem tươi?", results, final=False)
+    assert [c.role for c in contents] == ["user", "model", "user", "model", "user"]
+    assert contents[1] is raw_round1  # giữ nguyên nội dung Gemini trả (thought signature)
+    responses = [p.function_response for p in contents[2].parts]
+    assert [(r.name, r.id) for r in responses] == [("check_inventory_fefo", "c1"), ("calc_preorder_demand", "c2")]
+    assert responses[0].response == {"ok": True, "on_hand_qty": 10.0}  # dict, không nối thành chữ
+    assert contents[3].parts[0].function_call.name == "compare_suppliers"  # dựng lại khi thiếu bản gốc
+    assert contents[4].parts[0].function_response.response == {"result": [1, 2]}
+
+
+def test_gemini_final_round_appends_note() -> None:
+    results = [{"tool_name": "check_inventory_fefo", "arguments": {}, "round": 1, "result": {"ok": True}}]
+    contents = _gemini_stub()._build_contents("Kem tươi?", results, final=True)
+    assert contents[-1].parts[-1].text == FINAL_ROUND_NOTE
