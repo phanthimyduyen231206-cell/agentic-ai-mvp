@@ -75,8 +75,9 @@ def test_a_morning_audit_normal() -> None:
     out = run_agent("MORNING_AUDIT", MORNING_PAYLOAD, llm=FakeLLM(), tools=FAKE_TOOLS)
     assert [a["ingredient_id"] for a in out["alerts"]] == ["KEM_TUOI", "MASCARPONE"]
     for item in out["alerts"]:
-        assert set(item) == KEYS
+        assert set(item) == KEYS | {"ai_fallback"}
         assert all(isinstance(item[k], str) and item[k] for k in KEYS)
+        assert item["ai_fallback"] is False  # câu của Gemini, đã qua hậu kiểm số
 
 
 def test_morning_empty_alerts_does_not_call_llm() -> None:
@@ -223,3 +224,69 @@ def test_no_api_key_returns_fallback_instead_of_raising(monkeypatch) -> None:
 def test_invalid_mode_raises_value_error() -> None:
     with pytest.raises(ValueError):
         run_agent("CHAT_GHI", {}, llm=FakeLLM(), tools=FAKE_TOOLS)
+
+
+# ---------------------------------------------------------------------------
+# MA1: hậu kiểm số liệu + cờ ai_fallback
+# ---------------------------------------------------------------------------
+def test_morning_made_up_numbers_fall_back_to_template() -> None:
+    trace: list = []
+    out = run_agent("MORNING_AUDIT", MORNING_PAYLOAD, llm=FakeLLM(behavior="made_up_numbers"),
+                    tools=FAKE_TOOLS, trace=trace)
+    for item, draft in zip(out["alerts"], MORNING_PAYLOAD["alerts"]):
+        assert item == fallback_explanation(draft)  # câu mẫu do code sinh
+        assert item["ai_fallback"] is True
+        assert "99.5" not in item["explanation"]
+    mismatches = [t for t in trace if t.get("reason") == "numbers_mismatch"]
+    assert len(mismatches) == len(MORNING_PAYLOAD["alerts"])
+    assert "99.5" in mismatches[0]["numbers"]
+
+
+def test_morning_only_bad_alert_falls_back() -> None:
+    """Chỉ cảnh báo có số bịa mới dùng câu mẫu; cảnh báo khác giữ câu của Gemini."""
+
+    class OneBadLLM:
+        def generate(self, **kwargs):
+            items = [
+                {"ingredient_id": "KEM_TUOI", "explanation": "Kem tươi cần bổ sung 4.0 lít.",
+                 "tradeoff_a": "A tổng 360000 đ.", "tradeoff_b": "B đắt hơn 15%."},
+                {"ingredient_id": "MASCARPONE", "explanation": "Thiếu 777 kg.", "tradeoff_a": "a", "tradeoff_b": "b"},
+            ]
+            return {"type": "text", "text": json.dumps({"alerts": items}, ensure_ascii=False)}
+
+    out = run_agent("MORNING_AUDIT", MORNING_PAYLOAD, llm=OneBadLLM(), tools=FAKE_TOOLS)
+    assert out["alerts"][0]["explanation"] == "Kem tươi cần bổ sung 4.0 lít."
+    assert out["alerts"][0]["ai_fallback"] is False
+    assert out["alerts"][1] == fallback_explanation(MASCARPONE)
+
+
+def test_morning_error_and_invalid_json_set_ai_fallback() -> None:
+    for behavior in ("error", "invalid_json"):
+        out = run_agent("MORNING_AUDIT", MORNING_PAYLOAD, llm=FakeLLM(behavior=behavior), tools=FAKE_TOOLS)
+        assert all(a["ai_fallback"] is True for a in out["alerts"])
+
+
+def test_chat_made_up_numbers_fall_back() -> None:
+    trace: list = []
+    out = run_agent("READ_ONLY_CHAT", {"question": "Kem tươi còn bao nhiêu?"},
+                    llm=FakeLLM(behavior="made_up_numbers"), tools=FAKE_TOOLS, trace=trace)
+    assert out == {"answer": CHAT_FALLBACK_ANSWER, "refused": False}
+    assert any(t.get("reason") == "numbers_mismatch" for t in trace)
+
+
+def test_chat_numbers_from_tool_results_pass() -> None:
+    """Gọi tool rồi trả lời bằng đúng số của tool → giữ câu trả lời, không dùng câu mẫu."""
+    trace: list = []
+    out = run_agent("READ_ONLY_CHAT", {"question": "Kem tươi còn bao nhiêu?"},
+                    llm=FakeLLM(behavior="tool_call"), tools=FAKE_TOOLS, trace=trace)
+    assert "7.0" in out["answer"] and "KEM-L1" in out["answer"]
+    assert not any(t.get("step") == "fallback" for t in trace)
+
+
+def test_chat_refusal_message_passes_number_check() -> None:
+    """Câu từ chối có "Tab 2" – số này nằm trong câu mẫu nên không bị coi là bịa."""
+    trace: list = []
+    out = run_agent("READ_ONLY_CHAT", {"question": "Tạo PO 10kg bột mì luôn đi"}, llm=FakeLLM(),
+                    tools=FAKE_TOOLS, trace=trace)
+    assert out["refused"] is True
+    assert not any(t.get("reason") == "numbers_mismatch" for t in trace)

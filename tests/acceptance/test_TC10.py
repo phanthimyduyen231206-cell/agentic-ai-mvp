@@ -60,7 +60,12 @@ def test_tc10_alert_survives_restart(db, monkeypatch):
     from services import calc
     from services.audit_service import run_morning_audit
 
-    monkeypatch.setattr(calc, "compute_alerts", lambda run_date: [KEM_TUOI], raising=False)
+    from data import repository as repo0
+
+    # Như calc thật: snapshot_hash tính lúc tính cảnh báo (trước khi gọi Gemini)
+    monkeypatch.setattr(calc, "compute_alerts",
+                        lambda run_date: [dict(KEM_TUOI, snapshot_hash=repo0.compute_snapshot_hash("KEM_TUOI"))],
+                        raising=False)
     out = run_morning_audit("SCHEDULED", llm=FakeLLM())
     assert out["status"] == "SUCCEEDED"
     alert_id = out["alert_ids"][0]

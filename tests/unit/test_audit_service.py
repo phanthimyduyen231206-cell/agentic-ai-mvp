@@ -61,8 +61,9 @@ def drafts(monkeypatch):
     box = {"value": [KEM_TUOI, BO_LAT], "calls": 0}
 
     def fake(run_date):
+        # Như calc thật (contracts mục 5): snapshot_hash tính ngay lúc tính cảnh báo
         box["calls"] += 1
-        return box["value"]
+        return [dict(d, snapshot_hash=repo.compute_snapshot_hash(d["ingredient_id"])) for d in box["value"]]
 
     monkeypatch.setattr(calc, "compute_alerts", fake, raising=False)
     return box
@@ -317,3 +318,79 @@ def test_failed_rerun_does_not_close_old_alerts(db, drafts, monkeypatch):
     assert run_morning_audit("MANUAL", rerun=True, user=MANAGER, llm=FakeLLM())["status"] == "FAILED"
     assert all(repo.get_alert(i)["status"] == "OPEN" for i in run1["alert_ids"])
     assert _dismissed_logs() == []
+
+
+# ---------------------------------------------------------------------------
+# MA1: snapshot_hash tính TRƯỚC khi gọi Gemini (hở TC15) + cờ ai_fallback
+# ---------------------------------------------------------------------------
+class _SlowLLMWithStockIssue(FakeLLM):
+    """Gemini chậm: trong lúc "đang nghĩ" thì quản lý ca khác xuất 1 lít Kem tươi (TC15)."""
+
+    def generate(self, *args, **kwargs):
+        if self.call_count == 0:
+            from services import inventory_service
+            inventory_service.issue_stock_fefo("KEM_TUOI", 1, {"username": "quanly2", "role": "MANAGER"})
+        return super().generate(*args, **kwargs)
+
+
+def _kem_alert(out):
+    return repo.get_alerts(run_id=out["run_id"], ingredient_id="KEM_TUOI")[0]
+
+
+def test_tc15_stock_issued_while_waiting_gemini_blocks_po(db):
+    """calc thật + Gemini chậm + xuất kho trong lúc chờ → tạo PO bị SNAPSHOT_CHANGED."""
+    from services import po_service
+    from services.po_service import GuardrailError
+
+    hash_before = repo.compute_snapshot_hash("KEM_TUOI")
+    out = run_morning_audit("MANUAL", user=MANAGER, llm=_SlowLLMWithStockIssue())
+    assert out["status"] == "SUCCEEDED"
+    alert = _kem_alert(out)
+    assert alert["snapshot_hash"] == hash_before  # hash của dữ liệu calc đã dùng, không phải sau Gemini
+    assert repo.compute_snapshot_hash("KEM_TUOI") != hash_before
+
+    with pytest.raises(GuardrailError) as exc:
+        po_service.create_draft_po(alert["alert_id"], "A", None, MANAGER)
+    assert exc.value.code == "SNAPSHOT_CHANGED"
+    assert repo.get_alert(alert["alert_id"])["status"] == "OPEN"
+
+
+def test_po_created_when_stock_unchanged(db):
+    """Đối chứng: không ai đụng kho trong lúc chờ Gemini → tạo PO bình thường."""
+    from services import po_service
+
+    out = run_morning_audit("MANUAL", user=MANAGER, llm=FakeLLM())
+    po_id = po_service.create_draft_po(_kem_alert(out)["alert_id"], "A", None, MANAGER)
+    assert repo.get_purchase_order(po_id)["status"] == "DRAFT"
+
+
+def test_draft_without_hash_gets_hash_before_gemini(db, monkeypatch):
+    """AlertDraft thiếu snapshot_hash → audit_service tự tính, vẫn TRƯỚC khi gọi Gemini."""
+    monkeypatch.setattr(audit_service, "_compute_alerts", lambda d: [dict(KEM_TUOI, snapshot_hash=None)])
+    hash_before = repo.compute_snapshot_hash("KEM_TUOI")
+    out = run_morning_audit("MANUAL", user=MANAGER, llm=_SlowLLMWithStockIssue())
+    assert _kem_alert(out)["snapshot_hash"] == hash_before
+    assert repo.compute_snapshot_hash("KEM_TUOI") != hash_before
+
+
+def test_ai_fallback_flag_per_alert(db, drafts):
+    out = run_morning_audit("MANUAL", user=MANAGER, llm=FakeLLM())
+    assert all(a["ai_fallback"] == 0 for a in repo.get_alerts(run_id=out["run_id"]))
+    created = [json.loads(r["detail_json"]) for r in repo.get_audit_logs(event_type="ALERT_CREATED")]
+    assert all(d["ai_fallback"] is False for d in created)
+
+
+def test_gemini_error_sets_ai_fallback_true(db, drafts):
+    out = run_morning_audit("MANUAL", user=MANAGER, llm=FakeLLM(behavior="error"))
+    assert all(a["ai_fallback"] == 1 for a in repo.get_alerts(run_id=out["run_id"]))
+
+
+def test_made_up_numbers_use_template_and_flag(db, drafts):
+    """FakeLLM bịa số → lưu câu mẫu do code sinh, ai_fallback = 1, RUN_SUCCEEDED ghi numbers_mismatch."""
+    out = run_morning_audit("MANUAL", user=MANAGER, llm=FakeLLM(behavior="made_up_numbers"))
+    kem = _kem_alert(out)
+    assert "99.5" not in kem["explanation"] and "-2.0" in kem["explanation"]
+    assert kem["ai_fallback"] == 1
+    assert all("123456" not in (o["tradeoff"] or "") for o in json.loads(kem["options_json"]))
+    detail = json.loads(repo.get_audit_logs(event_type="RUN_SUCCEEDED")[0]["detail_json"])
+    assert "numbers_mismatch" in detail["fallback"]

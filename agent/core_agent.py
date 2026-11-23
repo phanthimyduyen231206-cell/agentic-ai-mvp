@@ -5,7 +5,7 @@ Chủ file: Mai Anh (M03). Chữ ký hàm: xem docs/contracts.md mục 7.
     run_agent(mode, payload, llm=None, tools=None, trace=None) -> dict
 
 - mode = "MORNING_AUDIT": payload = {"run_date", "alerts": [AlertDraft]}
-  → {"alerts": [{"ingredient_id", "explanation", "tradeoff_a", "tradeoff_b"}]}
+  → {"alerts": [{"ingredient_id", "explanation", "tradeoff_a", "tradeoff_b", "ai_fallback"}]}
 - mode = "READ_ONLY_CHAT": payload = {"question"} → {"answer", "refused"}
 - llm=None → Gemini thật (GeminiLLM); test truyền FakeLLM() (tests/fake_llm.py).
 - tools=None → 4 tool đọc của agent/tools.py (Q03); khi Q03 chưa có hàm thì dùng
@@ -13,6 +13,10 @@ Chủ file: Mai Anh (M03). Chữ ký hàm: xem docs/contracts.md mục 7.
 - trace: truyền một list để nhận nhật ký từng bước (tool đã gọi, tool bị chặn,
   lý do dùng câu dự phòng). audit_service / chat_service dùng để ghi audit log.
 - Gemini lỗi, quá giờ, gọi quá 6 vòng hoặc JSON sai → trả câu mẫu do code sinh, KHÔNG raise.
+- Hậu kiểm số liệu (agent/output_check.py): câu Gemini có con số không nằm trong dữ liệu đầu vào
+  (AlertDraft khi rà soát, kết quả tool khi chat) → bỏ câu đó, dùng câu mẫu, trace "numbers_mismatch".
+- Đầu ra MORNING_AUDIT có thêm cờ "ai_fallback" cho từng cảnh báo: True = câu mẫu do code sinh
+  (Gemini lỗi / JSON sai / thiếu cảnh báo / số lệch), False = câu của Gemini đã qua hậu kiểm.
 
 Gemini không bao giờ thấy hàm ghi: chỉ 4 tên trong ALLOWED_TOOLS được chạy, tên khác bị chặn.
 """
@@ -28,13 +32,15 @@ from typing import Any, Callable, Literal
 
 from pydantic import BaseModel, Field, ValidationError, field_validator
 
-from agent.prompts import get_system_prompt
+from agent.output_check import find_unknown_numbers
+from agent.prompts import OUT_OF_SCOPE_MESSAGE, REFUSAL_MESSAGE, get_system_prompt
 
 logger = logging.getLogger(__name__)
 
 Mode = Literal["MORNING_AUDIT", "READ_ONLY_CHAT"]
 
 MAX_TOOL_ROUNDS = 6
+FORECAST_DAYS = 3  # H = 3 ngày nhìn tới (calc.py); Gemini được nhắc tới số này dù AlertDraft không ghi
 DEFAULT_MODEL = "gemini-3.5-flash-lite"
 
 # Đúng 4 tool đọc theo contracts mục 6. Không có create_draft_po, write_audit_log.
@@ -301,7 +307,7 @@ def _option_text(opt: dict, unit: str) -> str:
 
 
 def fallback_explanation(alert: dict) -> dict:
-    """Diễn giải mẫu cho 1 AlertDraft, chỉ dùng số có trong dữ liệu."""
+    """Diễn giải mẫu cho 1 AlertDraft, chỉ dùng số có trong dữ liệu. Luôn có ai_fallback = True."""
     name = alert.get("ingredient_name") or alert.get("ingredient_id")
     unit = alert.get("unit", "")
     explanation = (
@@ -326,7 +332,7 @@ def fallback_explanation(alert: dict) -> dict:
         tradeoff_a = note or "Cần xử lý thủ công."
         tradeoff_b = "Không có phương án B."
     return {"ingredient_id": alert.get("ingredient_id"), "explanation": explanation,
-            "tradeoff_a": tradeoff_a, "tradeoff_b": tradeoff_b}
+            "tradeoff_a": tradeoff_a, "tradeoff_b": tradeoff_b, "ai_fallback": True}
 
 
 def _morning_fallback(alerts: list[dict]) -> dict:
@@ -365,11 +371,16 @@ def _run_tool(tools: dict[str, Callable[..., Any]], name: str, args: dict, trace
     return {"tool_name": name, "arguments": args, "result": result}
 
 
-def _ask_llm(llm: Any, mode: str, user_message: str, tools: dict, trace: list | None) -> str | None:
-    """Vòng hỏi Gemini ↔ chạy tool. Trả văn bản cuối, hoặc None nếu lỗi / quá số vòng."""
+def _ask_llm(llm: Any, mode: str, user_message: str, tools: dict, trace: list | None,
+             tool_results: list[dict] | None = None) -> str | None:
+    """Vòng hỏi Gemini ↔ chạy tool. Trả văn bản cuối, hoặc None nếu lỗi / quá số vòng.
+
+    `tool_results`: truyền list để nhận lại kết quả các tool đã chạy (dùng cho hậu kiểm số liệu).
+    """
     available = [n for n in TOOLS_BY_MODE[mode] if n in tools]
     system_prompt = get_system_prompt(mode)
-    tool_results: list[dict] = []
+    if tool_results is None:
+        tool_results = []
     rounds = 0
     while True:
         try:
@@ -412,24 +423,46 @@ def _morning(payload: dict, llm: Any, tools: dict, trace: list | None) -> dict:
         item = by_id.get(alert.get("ingredient_id"))
         if item is None:
             _log(trace, "fallback", reason="missing_alert", ingredient_id=alert.get("ingredient_id"))
-            item = fallback_explanation(alert)
-        result.append(item)
+            result.append(fallback_explanation(alert))
+            continue
+        bad = _unknown_numbers_in_alert(item, alert, payload.get("run_date"))
+        if bad:
+            _log(trace, "fallback", reason="numbers_mismatch", ingredient_id=alert.get("ingredient_id"),
+                 numbers=bad[:10])
+            result.append(fallback_explanation(alert))
+            continue
+        result.append({**item, "ai_fallback": False})
     return {"alerts": result}
+
+
+def _unknown_numbers_in_alert(item: dict, alert: dict, run_date: Any) -> list[str]:
+    """Số trong explanation, tradeoff_a, tradeoff_b phải có trong AlertDraft (hoặc run_date, H = 3)."""
+    extra = [run_date, FORECAST_DAYS, len(alert.get("options") or []), len(alert.get("causes") or [])]
+    text = " | ".join(str(item.get(k) or "") for k in ("explanation", "tradeoff_a", "tradeoff_b"))
+    return find_unknown_numbers(text, alert, extra=extra)
 
 
 def _chat(payload: dict, llm: Any, tools: dict, trace: list | None) -> dict:
     question = str(payload.get("question") or "").strip()
     if not question:
         return {"answer": CHAT_EMPTY_ANSWER, "refused": True}
-    text = _ask_llm(llm, "READ_ONLY_CHAT", question, tools, trace)
+    tool_results: list[dict] = []
+    text = _ask_llm(llm, "READ_ONLY_CHAT", question, tools, trace, tool_results)
     if text is None:
         _log(trace, "fallback", reason="llm_failed")
         return {"answer": CHAT_FALLBACK_ANSWER, "refused": False}
     try:
-        return ChatOutput.model_validate(_parse_json(text)).model_dump()
+        out = ChatOutput.model_validate(_parse_json(text)).model_dump()
     except (ValueError, ValidationError) as exc:
         _log(trace, "fallback", reason="invalid_json", error=str(exc)[:300])
         return {"answer": CHAT_FALLBACK_ANSWER, "refused": False}
+    # Số trong câu trả lời phải lấy từ kết quả tool của lượt này (hoặc có sẵn trong câu hỏi / câu từ chối).
+    bad = find_unknown_numbers(out["answer"], [r.get("result") for r in tool_results], question,
+                               extra=[REFUSAL_MESSAGE, OUT_OF_SCOPE_MESSAGE, FORECAST_DAYS])
+    if bad:
+        _log(trace, "fallback", reason="numbers_mismatch", numbers=bad[:10])
+        return {"answer": CHAT_FALLBACK_ANSWER, "refused": False}
+    return out
 
 
 def run_agent(mode: Mode, payload: dict, llm: Any = None,

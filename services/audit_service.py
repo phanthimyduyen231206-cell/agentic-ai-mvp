@@ -15,8 +15,10 @@ Các bước của 1 phiên rà soát:
 3. Gọi calc.compute_alerts(today) (Q02) – code tính số, không dùng LLM.
 4. Không thiếu → SUCCEEDED, không tạo cảnh báo.
    Có thiếu → core_agent.run_agent("MORNING_AUDIT") diễn giải (Gemini lỗi thì có câu mẫu dự phòng),
-   lưu alerts OPEN theo contracts mục 10 (snapshot_hash tính bằng repository.compute_snapshot_hash – P03),
-   log ALERT_CREATED từng cảnh báo, rồi RUN_SUCCEEDED.
+   lưu alerts OPEN theo contracts mục 10, log ALERT_CREATED từng cảnh báo, rồi RUN_SUCCEEDED.
+   snapshot_hash = draft["snapshot_hash"] do calc tính TRƯỚC khi gọi Gemini (không tính lại sau):
+   Gemini chậm mà có người xuất/nhập kho trong lúc chờ thì hash đã lưu khác hash hiện tại,
+   create_draft_po chặn SNAPSHOT_CHANGED (TC15). Cột ai_fallback = 1 khi cảnh báo dùng câu mẫu.
    Phiên thành công (kể cả không thiếu hàng) đóng cảnh báo OPEN của các phiên trước → DISMISSED,
    log ALERT_DISMISSED (reason SUPERSEDED); cảnh báo SELECTED giữ nguyên.
 5. Lỗi bất kỳ ở bước 2–4 → phiên FAILED, ghi lỗi, log RUN_FAILED. Hàm không raise.
@@ -199,14 +201,17 @@ def _save_alerts(run_id: int, drafts: list[dict], explained: dict[str, dict], ac
                 "shortage_qty": draft.get("shortage_qty"),
                 "options_json": _options_with_tradeoff(draft.get("options"), exp),
                 "explanation": exp.get("explanation"),
-                # Hash dữ liệu đầu vào ngay lúc tạo cảnh báo, bằng đúng hàm P03 mà create_draft_po
-                # dùng để kiểm lại → dữ liệu đổi trong lúc chờ chọn thì bị chặn (TC15).
-                "snapshot_hash": repo.compute_snapshot_hash(draft["ingredient_id"], conn=conn),
+                # Hash của đúng dữ liệu calc đã dùng để tính cảnh báo, lấy từ AlertDraft (tính trước
+                # khi gọi Gemini). KHÔNG tính lại ở đây: nếu kho đổi trong lúc chờ Gemini, hash mới sẽ
+                # "hợp thức hóa" dữ liệu đã đổi và create_draft_po không phát hiện được (TC15).
+                "snapshot_hash": draft.get("snapshot_hash"),
+                "ai_fallback": int(bool(exp.get("ai_fallback", True))),
                 "created_at": now,
             }, conn=conn)
             write_audit_log(actor, "ALERT_CREATED", entity_type="alert", entity_id=alert_id, run_id=run_id,
                             detail={"ingredient_id": draft["ingredient_id"], "main_cause": draft.get("main_cause"),
-                                    "open_po_id": draft.get("open_po_id"), "note": draft.get("note")},
+                                    "open_po_id": draft.get("open_po_id"), "note": draft.get("note"),
+                                    "ai_fallback": bool(exp.get("ai_fallback", True))},
                             conn=conn)
             ids.append(alert_id)
         superseded = _supersede_old_alerts(run_id, now, conn)
@@ -270,7 +275,7 @@ def run_morning_audit(trigger: Literal["SCHEDULED", "MANUAL"], rerun: bool = Fal
     try:
         mark_delayed_pos(run_id, actor)
         today = clock.today()
-        drafts = _compute_alerts(today)
+        drafts = [dict(d) for d in _compute_alerts(today)]
 
         if not drafts:
             now = _ts(clock.now())
@@ -281,6 +286,11 @@ def run_morning_audit(trigger: Literal["SCHEDULED", "MANUAL"], rerun: bool = Fal
                 write_audit_log(actor, "RUN_SUCCEEDED", entity_type="audit_run", entity_id=run_id, run_id=run_id,
                                 detail={"alert_count": 0, "superseded": superseded}, conn=conn)
             return _result(run_id, "SUCCEEDED", [], "Rà soát xong: không có nguyên liệu thiếu.")
+
+        # AlertDraft thiếu hash (không đúng contracts mục 5) → tính ngay bây giờ, vẫn TRƯỚC khi gọi Gemini.
+        for draft in drafts:
+            if not draft.get("snapshot_hash"):
+                draft["snapshot_hash"] = repo.compute_snapshot_hash(draft["ingredient_id"])
 
         trace: list[dict] = []
         explained = run_agent("MORNING_AUDIT", {"run_date": today.isoformat(), "alerts": drafts},

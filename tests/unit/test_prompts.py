@@ -88,3 +88,14 @@ def test_chat_prompt_has_tool_signatures_from_contracts() -> None:
         "compare_suppliers(ingredient_id)",
     ):
         assert sig in READ_ONLY_CHAT_PROMPT
+
+
+def test_prompt_examples_do_not_use_real_kem_tuoi_numbers() -> None:
+    """MA1 – góp ý của thầy: ví dụ trong prompt dùng nguyên liệu giả định, không chép số Kem tươi thật."""
+    real_values = ["-2.0", "360000", "414000", "15.0", "90000", "103500", "2026-11-21T08:00:00",
+                   "2026-11-20T10:00:00", "2026-11-20T20:00:00", "2026-11-25T20:00:00", "KEM-L1", "KEM-L2",
+                   "Kem tươi Whipping Cream"]
+    for prompt in (MORNING_AUDIT_PROMPT, READ_ONLY_CHAT_PROMPT):
+        for value in real_values:
+            assert value not in prompt, value
+    assert MORNING_AUDIT_OUTPUT_EXAMPLE["alerts"][0]["ingredient_id"] == "NGUYEN_LIEU_X"
