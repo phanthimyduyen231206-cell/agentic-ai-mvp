@@ -42,7 +42,8 @@ def test_tc02_options_match_contract(db):
     kem = {a["ingredient_id"]: a for a in compute_alerts(NOW.date())}["KEM_TUOI"]
     a, b = kem["options"]
     assert (a["option"], a["sup_id"], a["order_qty"], a["total_cost"]) == ("A", "NCC_CHINH", 4.0, 360000)
-    assert a["arrival_at"] == "2026-11-21T08:00:00" and a["meets_earliest_preorder"] is True
+    # Đơn sớm nhất giao 21/11 → phải về trước 07:00 ngày 21/11; về 08:00 là không kịp.
+    assert a["arrival_at"] == "2026-11-21T08:00:00" and a["meets_earliest_preorder"] is False
     assert a["cost_diff_pct_vs_A"] == 0
     assert (b["option"], b["sup_id"], b["order_qty"], b["total_cost"]) == ("B", "NCC_HOA_TOC", 4.0, 414000)
     assert b["arrival_at"] == "2026-11-20T10:00:00" and b["meets_earliest_preorder"] is True

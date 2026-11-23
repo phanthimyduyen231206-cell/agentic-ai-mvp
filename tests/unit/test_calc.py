@@ -48,10 +48,10 @@ def _alerts():
     return {a["ingredient_id"]: a for a in calc.compute_alerts(TODAY)}
 
 
-def _quote(sup_id, cost, hours, qty=1.0):
+def _quote(sup_id, cost, hours, qty=1.0, reliability=0.9):
     return {"sup_id": sup_id, "sup_name": sup_id, "unit_price": cost / qty, "order_qty": qty,
             "total_cost": cost, "lead_time_hours": hours, "lead_time_days": calc.lead_time_days(hours),
-            "arrival_at": datetime(2026, 11, 20, 8, 0)}
+            "arrival_at": datetime(2026, 11, 20, 8, 0), "reliability": reliability}
 
 
 # ---------- Hàm thuần ----------
@@ -128,12 +128,53 @@ def test_choose_options_ties():
     assert b["sup_id"] == "S4"
 
 
-def test_meets_earliest_preorder():
+def test_choose_options_reason_has_hours_and_cost_diff():
+    # Số Bơ lạt (expected.md): A NCC Chính 24h 3.750.000đ, B Hỏa tốc 2h 4.025.000đ.
+    quotes = [_quote("NCC_CHINH", 3750000, 24, qty=15), _quote("NCC_HOA_TOC", 4025000, 2, qty=14)]
+    a, b = calc.choose_options(quotes, NOW, None)[0]
+    assert a["reason"] == "Rẻ nhất, về chậm hơn B 22 giờ"
+    assert b["reason"] == "Nhanh nhất, đắt hơn A 7.3% (275.000đ)"
+    assert b["cost_diff_pct_vs_A"] == 7.3   # % trong câu reason khớp đúng cột chênh lệch
+
+
+def test_choose_options_tie_prefers_reliability_then_sup_id():
+    # Hòa cả tiền lẫn giờ → NCC tin cậy hơn thắng dù sup_id đứng sau theo chữ cái.
+    quotes = [_quote("AAA", 100, 24, reliability=0.80), _quote("ZZZ", 100, 24, reliability=0.95),
+              _quote("FAST", 150, 2)]
+    a, b = calc.choose_options(quotes, NOW, None)[0]
+    assert (a["sup_id"], b["sup_id"]) == ("ZZZ", "FAST")
+    # B hòa giờ và tiền → cũng chọn reliability cao hơn
+    quotes = [_quote("CHEAP", 50, 24), _quote("B1", 100, 2, reliability=0.7), _quote("B2", 100, 2, reliability=0.99)]
+    assert calc.choose_options(quotes, NOW, None)[0][1]["sup_id"] == "B2"
+    # Reliability cũng hòa → theo sup_id
+    quotes = [_quote("Y", 100, 24), _quote("X", 100, 24), _quote("FAST", 150, 2)]
+    assert calc.choose_options(quotes, NOW, None)[0][0]["sup_id"] == "X"
+
+
+def test_reliability_only_breaks_ties_after_spec_rules():
+    # A hòa tiền: lead time ngắn hơn vẫn thắng NCC tin cậy hơn (quy tắc 5.4 đứng trước).
+    quotes = [_quote("RELIABLE", 100, 48, reliability=0.99), _quote("QUICKER", 100, 24, reliability=0.5),
+              _quote("FAST", 150, 2)]
+    assert calc.choose_options(quotes, NOW, None)[0][0]["sup_id"] == "QUICKER"
+    assert "reliability" not in calc.choose_options(quotes, NOW, None)[0][0]   # JSON options không đổi
+
+
+@pytest.mark.parametrize("arrival, expected", [
+    (datetime(2026, 11, 21, 20, 0), False),   # về 20:00 đúng ngày giao → không kịp
+    (datetime(2026, 11, 21, 8, 0), False),    # 08:00 vẫn trễ mốc 07:00
+    (datetime(2026, 11, 21, 7, 0), True),     # đúng 07:00 → kịp
+    (datetime(2026, 11, 20, 22, 0), True),    # về tối hôm trước
+    (datetime(2026, 11, 22, 6, 0), False),    # sau ngày giao
+])
+def test_meets_earliest_preorder_cutoff_7am(arrival, expected):
     q = _quote("X", 100, 48)  # arrival_at được _option dùng trực tiếp
-    q["arrival_at"] = datetime(2026, 11, 22, 8, 0)
-    opt = calc._option("A", q, 100, date(2026, 11, 21), "r")
-    assert opt["meets_earliest_preorder"] is False
-    assert calc._option("A", q, 100, date(2026, 11, 22), "r")["meets_earliest_preorder"] is True
+    q["arrival_at"] = arrival
+    assert calc._option("A", q, 100, date(2026, 11, 21), "r")["meets_earliest_preorder"] is expected
+
+
+def test_meets_earliest_preorder_without_preorder_is_true():
+    q = _quote("X", 100, 48)
+    q["arrival_at"] = datetime(2026, 11, 30, 20, 0)
     assert calc._option("A", q, 100, None, "r")["meets_earliest_preorder"] is True
 
 
