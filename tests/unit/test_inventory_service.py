@@ -181,3 +181,51 @@ def test_mark_received_creates_batch_via_receive_batch(db):
     assert repository.get_purchase_order("PO-004")["delivery_status"] == "RECEIVED"
     assert len(logs("BATCH_RECEIVED")) == 1
     assert len(logs("DELIVERY_RECEIVED")) == 1
+
+
+# ---------------- receive_batch(conn=...): nhận hàng một giao dịch (PA1) ----------------
+
+def test_receive_batch_with_conn_rollback_leaves_nothing(db):
+    """Người gọi truyền conn rồi rollback: không còn lô mới, không còn log BATCH_RECEIVED."""
+    before = [b["batch_id"] for b in repository.get_batches("BO_LAT")]
+    conn = repository.get_connection()
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        batch_id = inv.receive_batch("PO-004", 20, conn=conn)
+        # trong cùng giao dịch thì thấy lô mới
+        assert repository.get_batch(batch_id, conn=conn)["qty"] == 20
+        conn.rollback()
+    finally:
+        conn.close()
+    assert [b["batch_id"] for b in repository.get_batches("BO_LAT")] == before
+    assert logs("BATCH_RECEIVED") == []
+
+
+def test_receive_batch_with_conn_does_not_commit_or_close(db):
+    """Có conn thì hàm không tự commit, không đóng kết nối; người gọi commit mới lưu."""
+    conn = repository.get_connection()
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        batch_id = inv.receive_batch("PO-004", 20, conn=conn)
+        assert conn.in_transaction                        # chưa commit
+        assert repository.get_batch(batch_id) is None     # kết nối khác chưa thấy
+        conn.commit()                                     # conn vẫn dùng được (chưa bị đóng)
+    finally:
+        conn.close()
+    assert repository.get_batch(batch_id)["qty"] == 20
+    assert len(logs("BATCH_RECEIVED")) == 1
+
+
+def test_receive_batch_with_conn_error_left_to_caller(db):
+    """Lỗi bên trong: hàm raise, không tự rollback; người gọi rollback thì sạch."""
+    conn = repository.get_connection()
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        repository.update_purchase_order("PO-004", {"delivery_status": "RECEIVED"}, conn=conn)
+        with pytest.raises(GuardrailError):
+            inv.receive_batch("PO-999", 5, conn=conn)
+        assert conn.in_transaction                        # việc của người gọi vẫn còn đó
+        conn.rollback()
+    finally:
+        conn.close()
+    assert repository.get_purchase_order("PO-004")["delivery_status"] != "RECEIVED"

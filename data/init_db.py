@@ -27,34 +27,22 @@ DEFAULT_DB = ROOT / "data" / "bakery.db"
 
 
 # ---------------------------------------------------------------------------
-# 1. Lấy "bây giờ" từ clock.py của Duyên (D03).
-#    Nếu clock.py chưa có trên main thì tạm dùng giờ máy, có hỗ trợ DEMO_DATE.
+# 1. Lấy "bây giờ" từ services/clock.py (D03): có DEMO_DATE thì dùng giờ demo, không thì giờ thật.
 # ---------------------------------------------------------------------------
 def get_now() -> datetime:
-    try:
-        from services.clock import now  # hàm của Duyên
+    from services.clock import now
 
-        return now()
-    except ImportError:
-        demo = os.getenv("DEMO_DATE", "").strip()  # ví dụ DEMO_DATE=2026-11-20T08:00
-        if demo:
-            if "T" in demo:
-                return datetime.fromisoformat(demo)
-            return datetime.combine(date.fromisoformat(demo), time(8, 0))
-        return datetime.now()
+    return now()
 
 
 # ---------------------------------------------------------------------------
 # 2. SCHEMA: 9 bảng theo Mục 7
 # ---------------------------------------------------------------------------
-EVENT_TYPES = (
-    "RUN_STARTED", "RUN_SUCCEEDED", "RUN_FAILED", "RUN_REJECTED_DUPLICATE",
-    "ALERT_CREATED", "OPTION_SELECTED", "ALERT_DISMISSED",
-    "PO_CREATED", "PO_APPROVED", "PO_REJECTED", "PO_CANCELLED",
-    "PO_SEND_FAILED", "PO_SENT", "DELIVERY_DELAYED", "DELIVERY_RECEIVED",
-    "BATCH_RECEIVED", "STOCK_ISSUED", "GUARDRAIL_BLOCKED",
-    "CHAT_ANSWERED", "CHAT_REFUSED",
-)
+# Danh sách mã sự kiện dùng chung với services/audit_log.py (D04), không giữ bản riêng ở đây:
+# thêm mã mới (vd CHAT_FAILED) vào audit_log.py thì ràng buộc CHECK của bảng audit_logs tự cập nhật
+# khi chạy lại init_db.
+from services.audit_log import EVENT_TYPES  # noqa: E402  (cần sys.path ở trên)
+
 _EVENT_LIST = ", ".join(f"'{e}'" for e in EVENT_TYPES)
 
 SCHEMA_SQL = f"""

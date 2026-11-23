@@ -6,6 +6,7 @@ Chủ file: Phương Anh (P04). Chữ ký hàm: xem docs/contracts.md Mục 8.
   chặn xuất quá tồn còn hạn. Chỉ quản lý được xuất (ma trận quyền Mục 8). Ghi STOCK_ISSUED.
 - receive_batch: tạo lô mới khi po_service.mark_received xác nhận nhận hàng. Ghi BATCH_RECEIVED.
   Không tự đổi trạng thái PO, không kiểm delivery_status (việc đó của mark_received).
+  Nhận thêm `conn` để chạy chung một giao dịch với mark_received.
 
 Danh sách lô và thứ tự FEFO lấy DUY NHẤT từ repository.get_batches_fefo() (ranh giới Mục 14),
 file này không tự viết truy vấn sắp lô.
@@ -144,16 +145,24 @@ def issue_stock_fefo(ingredient_id, qty: float, user) -> list[dict]:
 # ---------------------------------------------------------------------------
 # 2. Nhập lô khi nhận hàng
 # ---------------------------------------------------------------------------
-def receive_batch(po_id: str, qty: float, expiry_date=None) -> str:
+def receive_batch(po_id: str, qty: float, expiry_date=None, conn=None) -> str:
     """Tạo lô mới cho hàng của PO `po_id`; trả batch_id mới (vd "BO-L2").
 
-    Chỉ do po_service.mark_received gọi (đã kiểm quyền và trạng thái PO trước đó).
+    Do po_service.mark_received gọi sau khi đã kiểm quyền và trạng thái PO.
     Hạn mặc định = ngày nhận + shelf_life_days nếu không nhập hạn in trên bao bì.
+
+    - Có `conn`: chạy trong giao dịch của người gọi (mark_received mở BEGIN IMMEDIATE),
+      hàm KHÔNG tự BEGIN / commit / rollback / close. Lỗi thì raise để người gọi rollback cả
+      việc đổi trạng thái PO, tạo lô và ghi log cùng lúc (nhận hàng một giao dịch).
+    - Không có `conn`: tự mở kết nối, tự BEGIN IMMEDIATE, tự commit như trước.
     """
     q = _to_qty(qty)
-    conn = repository.get_connection()
+    own = conn is None
+    if own:
+        conn = repository.get_connection()
     try:
-        conn.execute("BEGIN IMMEDIATE")
+        if own:
+            conn.execute("BEGIN IMMEDIATE")
         po = repository.get_purchase_order(po_id, conn=conn)
         if po is None:
             raise GuardrailError("INVALID_TRANSITION", f"Không tìm thấy PO {po_id}.")
@@ -168,10 +177,13 @@ def receive_batch(po_id: str, qty: float, expiry_date=None) -> str:
         write_audit_log("SYSTEM", "BATCH_RECEIVED", "batch", batch_id, conn=conn,
                         detail={"po_id": po_id, "ingredient_id": po["ingredient_id"], "qty": q,
                                 "expiry_date": expiry, "received_at": now.isoformat(timespec="seconds")})
-        conn.commit()
+        if own:
+            conn.commit()
         return batch_id
     except Exception:
-        conn.rollback()
+        if own:
+            conn.rollback()
         raise
     finally:
-        conn.close()
+        if own:
+            conn.close()
