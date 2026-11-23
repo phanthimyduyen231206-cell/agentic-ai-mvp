@@ -153,6 +153,7 @@ CREATE TABLE alerts (
     shortage_qty    REAL,
     options_json    TEXT NOT NULL DEFAULT '[]',             -- JSON phương án A/B do calc.py tính
     explanation     TEXT,
+    ai_fallback     INTEGER NOT NULL DEFAULT 0 CHECK (ai_fallback IN (0, 1)),  -- 1: câu mẫu, không phải Gemini
     snapshot_hash   TEXT,
     selected_option TEXT CHECK (selected_option IN ('A', 'B') OR selected_option IS NULL),
     selected_qty    REAL,

@@ -38,26 +38,27 @@ READ_ONLY_TOOLS = (
 CAUSE_CODES = ("PREORDER", "DAILY_USAGE", "EXPIRING_LOT", "SUPPLIER_DELAY", "OPEN_PO")
 
 # ---------------------------------------------------------------------------
-# Ví dụ JSON đầu ra – lấy số từ AlertDraft mẫu Kem tươi trong contracts mục 5.
+# Ví dụ JSON đầu ra – dùng NGUYÊN LIỆU GIẢ ĐỊNH (không có trong dữ liệu mẫu), số khác hẳn số thật,
+# để Gemini học đúng dạng câu mà không chép nhầm số của ví dụ vào cảnh báo thật (góp ý của thầy, MA1).
 # Test dùng các hằng này để đối chiếu schema với FakeLLM.
 # ---------------------------------------------------------------------------
 
 MORNING_AUDIT_OUTPUT_EXAMPLE = {
     "alerts": [
         {
-            "ingredient_id": "KEM_TUOI",
+            "ingredient_id": "NGUYEN_LIEU_X",
             "explanation": (
-                "Kem tươi Whipping Cream dự kiến còn -2.0 lít, thấp hơn mức tối thiểu 2.0 lít, "
-                "cần bổ sung 4.0 lít. Nguyên nhân chính là EXPIRING_LOT: 6.0 lít sẽ hết hạn trước khi kịp dùng; "
-                "ngoài ra đơn đặt trước cần 3.0 lít (PREORDER)."
+                "Nguyên liệu X dự kiến còn <projected_stock> <unit>, thấp hơn mức tối thiểu <min_stock> <unit>, "
+                "cần bổ sung <shortage_qty> <unit>. Nguyên nhân chính là EXPIRING_LOT: <qty của EXPIRING_LOT> <unit> "
+                "sẽ hết hạn trước khi kịp dùng; ngoài ra đơn đặt trước cần <qty của PREORDER> <unit> (PREORDER)."
             ),
             "tradeoff_a": (
-                "A – NCC Chính: tổng chi phí thấp nhất 360000 đ cho 4.0 lít, "
-                "hàng về 2026-11-21T08:00:00, vẫn kịp đơn đặt trước sớm nhất."
+                "A – <sup_name của A>: tổng chi phí thấp nhất <total_cost của A> đ cho <order_qty> <unit>, "
+                "hàng về <arrival_at của A>, vẫn kịp đơn đặt trước sớm nhất."
             ),
             "tradeoff_b": (
-                "B – NCC Hỏa tốc: về nhanh nhất lúc 2026-11-20T10:00:00 (2 giờ), "
-                "nhưng tổng 414000 đ, đắt hơn A 15.0%."
+                "B – <sup_name của B>: về nhanh nhất lúc <arrival_at của B> (<lead_time_hours của B> giờ), "
+                "nhưng tổng <total_cost của B> đ, đắt hơn A <cost_diff_pct_vs_A của B>%."
             ),
         }
     ]
@@ -65,8 +66,9 @@ MORNING_AUDIT_OUTPUT_EXAMPLE = {
 
 READ_ONLY_CHAT_OUTPUT_EXAMPLE = {
     "answer": (
-        "Kem tươi còn 10.0 lít, xếp theo FEFO: lô KEM-L1 còn 7.0 lít (hết hạn 2026-11-20T20:00:00), "
-        "lô KEM-L2 còn 3.0 lít (hết hạn 2026-11-25T20:00:00). Nên ưu tiên dùng lô KEM-L1."
+        "Nguyên liệu X còn <on_hand_qty> <unit>, xếp theo FEFO: lô <batch_id lô 1> còn <qty> <unit> "
+        "(hết hạn <expiry_date>), lô <batch_id lô 2> còn <qty> <unit> (hết hạn <expiry_date>). "
+        "Nên ưu tiên dùng lô hết hạn sớm nhất."
     ),
     "refused": False,
 }
@@ -118,7 +120,8 @@ QUY TẮC BẮT BUỘC
 - {RULE_LOCK_LINE}
 
 ĐỊNH DẠNG ĐẦU RA
-Chỉ trả về đúng một JSON hợp lệ, không markdown, không lời dẫn. Có đủ mọi ingredient_id của đầu vào, giữ nguyên thứ tự, mỗi phần tử đúng 4 khóa sau và cả 4 đều là chuỗi không rỗng:
+Chỉ trả về đúng một JSON hợp lệ, không markdown, không lời dẫn. Có đủ mọi ingredient_id của đầu vào, giữ nguyên thứ tự, mỗi phần tử đúng 4 khóa sau và cả 4 đều là chuỗi không rỗng.
+Ví dụ dưới đây chỉ minh họa DẠNG câu: <...> là chỗ thay bằng giá trị của trường cùng tên trong dữ liệu đầu vào, "Nguyên liệu X" là nguyên liệu giả định. Không chép chữ trong <...> vào câu trả lời.
 {_as_json(MORNING_AUDIT_OUTPUT_EXAMPLE)}
 """
 
@@ -149,7 +152,7 @@ VIỆC KHÔNG ĐƯỢC LÀM
 
 ĐỊNH DẠNG ĐẦU RA
 Chỉ trả về đúng một JSON hợp lệ, không markdown, không lời dẫn, đúng 2 khóa "answer" (chuỗi) và "refused" (true/false).
-Ví dụ câu hỏi bình thường:
+Ví dụ câu hỏi bình thường (chỉ minh họa DẠNG câu; <...> thay bằng giá trị lấy từ kết quả công cụ, "Nguyên liệu X" là giả định):
 {_as_json(READ_ONLY_CHAT_OUTPUT_EXAMPLE)}
 Ví dụ bị từ chối:
 {_as_json(READ_ONLY_CHAT_REFUSED_EXAMPLE)}
