@@ -207,7 +207,7 @@ def fake_receive(monkeypatch):
     from services import inventory_service
     calls = []
 
-    def receive_batch(po_id, qty, expiry_date=None):
+    def receive_batch(po_id, qty, expiry_date=None, conn=None):
         calls.append((po_id, qty, expiry_date))
         return "BOLAT-L9"
 
@@ -252,7 +252,7 @@ def test_nhan_hang_bam_hai_lan_cung_luc_chi_tao_mot_lo(db, monkeypatch):
     po_id = _sent()
     made = []
 
-    def slow_receive(po_id, qty, expiry_date=None):
+    def slow_receive(po_id, qty, expiry_date=None, conn=None):
         time.sleep(0.2)
         made.append(po_id)
         return f"BOLAT-L{len(made) + 8}"
@@ -279,7 +279,7 @@ def test_tao_lo_loi_thi_po_tro_lai_cho_giao(db, monkeypatch):
     from services import inventory_service
     po_id = _sent()
 
-    def broken(po_id, qty, expiry_date=None):
+    def broken(po_id, qty, expiry_date=None, conn=None):
         raise RuntimeError("DB lỗi")
 
     monkeypatch.setattr(inventory_service, "receive_batch", broken, raising=False)
@@ -288,6 +288,44 @@ def test_tao_lo_loi_thi_po_tro_lai_cho_giao(db, monkeypatch):
     po = repository.get_purchase_order(po_id)
     assert (po["delivery_status"], po["received_qty"]) == ("PENDING", 0)
     assert logs("DELIVERY_RECEIVED") == []
+
+
+def _batch_ids():
+    return {b["batch_id"] for b in repository.get_batches("BO_LAT")}
+
+
+def test_nhan_hang_that_tao_lo_va_ghi_ca_hai_log(db):
+    """DU2: dùng receive_batch thật (PA1), cả 4 bước trong một giao dịch."""
+    po_id = _sent()
+    before = _batch_ids()
+    batch_id = po_service.mark_received(po_id, 15, MANAGER)
+    assert _batch_ids() - before == {batch_id}
+    assert repository.get_batch(batch_id)["po_id"] == po_id
+    po = repository.get_purchase_order(po_id)
+    assert (po["delivery_status"], po["received_qty"]) == ("RECEIVED", 15)
+    assert len(logs("BATCH_RECEIVED")) == 1 and len(logs("DELIVERY_RECEIVED")) == 1
+
+
+def test_loi_sau_khi_tao_lo_thi_rollback_ca_lo_va_po(db, monkeypatch):
+    """DU2: lô đã chèn nhưng ghi log DELIVERY_RECEIVED lỗi -> không còn lô mồ côi, PO vẫn chờ giao."""
+    po_id = _sent()
+    before = _batch_ids()
+    real_log = po_service.write_audit_log
+
+    def log_fails(actor, event_type, *args, **kwargs):
+        if event_type == "DELIVERY_RECEIVED":
+            raise RuntimeError("ghi log lỗi")
+        return real_log(actor, event_type, *args, **kwargs)
+
+    monkeypatch.setattr(po_service, "write_audit_log", log_fails)
+    with pytest.raises(RuntimeError):
+        po_service.mark_received(po_id, 15, MANAGER)
+    assert _batch_ids() == before
+    po = repository.get_purchase_order(po_id)
+    assert (po["delivery_status"], po["received_qty"]) == ("PENDING", 0)
+    assert logs("BATCH_RECEIVED") == [] and logs("DELIVERY_RECEIVED") == []
+    monkeypatch.setattr(po_service, "write_audit_log", real_log)
+    assert po_service.mark_received(po_id, 15, MANAGER)   # sửa xong thì nhận lại được
 
 
 # ---------------------------------------------------------------- bỏ qua cảnh báo

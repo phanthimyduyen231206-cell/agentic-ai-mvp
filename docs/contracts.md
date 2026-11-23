@@ -151,7 +151,7 @@ def run_agent(mode: Literal["MORNING_AUDIT", "READ_ONLY_CHAT"], payload: dict, l
 
 ```python
 def issue_stock_fefo(ingredient_id, qty: float, user) -> list[dict]   # [{"batch_id", "taken"}]; raise GuardrailError nếu qty > tồn còn hạn
-def receive_batch(po_id: str, qty: float, expiry_date: datetime | None = None) -> str   # trả batch_id mới
+def receive_batch(po_id: str, qty: float, expiry_date: datetime | None = None, conn=None) -> str   # trả batch_id mới
 ```
 
 ## 9. services/po_service.py – Duyên (D05)
@@ -176,13 +176,29 @@ def dismiss_alert(alert_id: int, user) -> None  # quản lý bấm "Bỏ qua": c
   (**chỉ có ngày** `YYYY-MM-DD`, như Mục 0); file `outbox/PO-xxx.csv` (UTF-8 có BOM để Excel đọc đúng tiếng Việt).
 - Cảnh báo của PO → RESOLVED khi PO SENT, REJECTED hoặc CANCELLED.
 - `mark_received` chỉ nhận một lần đủ số lượng còn lại (khác → `QTY_INVALID`), gọi
-  `inventory_service.receive_batch(po_id, qty, expiry_date)` để tạo lô. **`receive_batch` ghi `BATCH_RECEIVED`**,
+  `inventory_service.receive_batch(po_id, qty, expiry_date, conn=conn)` để tạo lô. **`receive_batch` ghi `BATCH_RECEIVED`**,
   `mark_received` ghi `DELIVERY_RECEIVED` và đổi `delivery_status = RECEIVED`, `received_qty`.
-  `receive_batch` không tự đổi trạng thái PO và **không kiểm `delivery_status`**: để chống nhận trùng,
-  `mark_received` đánh dấu PO RECEIVED trước rồi mới gọi `receive_batch` (lỗi thì trả PO về như cũ).
+  **Một giao dịch `BEGIN IMMEDIATE`** cho cả: kiểm tra → PO RECEIVED → tạo lô → 2 dòng log. Bước nào lỗi thì
+  rollback hết (không có PO đã nhận mà thiếu lô, hay lô thiếu log). Có `conn` thì `receive_batch` không tự
+  BEGIN/commit/rollback/close; không truyền `conn` thì tự mở giao dịch riêng như cũ.
+  `receive_batch` không tự đổi trạng thái PO và **không kiểm `delivery_status`**: chống nhận trùng do
+  `mark_received` lo (lần bấm sau chờ khóa, thấy PO đã RECEIVED nên bị chặn `INVALID_TRANSITION`).
   `receive_batch` chỉ cần đọc PO để lấy `ingredient_id`, tạo lô (hạn mặc định = ngày nhận + shelf_life_days), trả `batch_id`.
 
 Mã lỗi `GuardrailError.code`: QTY_INVALID, INGREDIENT_NOT_FOUND, SUPPLIER_INVALID, MOQ_VIOLATION, ALERT_NOT_OPEN, DUPLICATE_PO, NOT_MANAGER, INVALID_TRANSITION, SNAPSHOT_CHANGED, SEND_FAILED.
+
+### Đăng nhập – `services/auth.py` (Duyên, DU2)
+
+```python
+class LoginResult(NamedTuple): user: dict | None; message: str   # message là câu tiếng Việt cho giao diện
+def login_manager(name, pin) -> LoginResult   # tên bắt buộc; PIN riêng theo MANAGER_PINS, dự phòng MANAGER_PIN chung
+def login_staff(name) -> LoginResult          # nhân viên chỉ xem: không PIN, tên bắt buộc
+def manager_names() -> list[str]              # tên các quản lý đã cấu hình (để giao diện cho chọn)
+def is_configured() -> bool                   # đã có MANAGER_PINS hoặc MANAGER_PIN
+```
+- `.env`: `MANAGER_PINS=Tên:PIN,Tên:PIN`. Tên so không phân biệt hoa thường và khoảng trắng thừa; `user["username"]` là tên như trong cấu hình.
+- Sai PIN 5 lần liên tiếp thì tên đó bị khóa 5 phút (đếm trong bộ nhớ app, theo giờ thật, không theo DEMO_DATE). Đăng nhập đúng thì đếm lại từ đầu.
+- Thông báo không chứa PIN nào. Vai trò lấy từ kết quả đăng nhập, không từ tham số giao diện.
 
 ## 10. services/audit_service.py, chat_service.py – Mai Anh (M04, M05)
 
@@ -235,6 +251,7 @@ stubs bị xóa ở việc Y09.
 | `issue_stock_fefo(...)` | `inventory_service.issue_stock_fefo` | |
 | `create_draft_po`, `approve_po`, `reject_po`, `cancel_po`, `send_po`, `mark_received`, `dismiss_alert` | `po_service` (Mục 9) | |
 | `GuardrailError` | `po_service.GuardrailError` | `app.py` bắt lỗi này để báo đỏ |
+| `login_manager(name, pin)`, `login_staff(name)`, `manager_names()` | `auth` (Mục 9, phần Đăng nhập) | Trang đăng nhập dùng; phiên lưu `result.user` |
 | `get_audit_logs(...)`, `get_audit_runs(...)` | `repository.get_audit_logs`, `repository.get_audit_runs` | Tab 4 Nhật ký |
 
 ## 12. Ghi nhận góp ý
