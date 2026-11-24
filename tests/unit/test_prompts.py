@@ -99,3 +99,12 @@ def test_prompt_examples_do_not_use_real_kem_tuoi_numbers() -> None:
         for value in real_values:
             assert value not in prompt, value
     assert MORNING_AUDIT_OUTPUT_EXAMPLE["alerts"][0]["ingredient_id"] == "NGUYEN_LIEU_X"
+
+
+def test_chat_prompt_explains_history_and_rounds() -> None:
+    """MA2: prompt nói rõ khung lịch sử và số vòng tool khớp core_agent."""
+    from agent import core_agent
+    from agent.prompts import CURRENT_QUESTION_HEADER, HISTORY_HEADER, MAX_TOOL_ROUNDS_IN_PROMPT
+
+    assert MAX_TOOL_ROUNDS_IN_PROMPT == core_agent.MAX_TOOL_ROUNDS
+    assert HISTORY_HEADER in READ_ONLY_CHAT_PROMPT and CURRENT_QUESTION_HEADER in READ_ONLY_CHAT_PROMPT
