@@ -12,11 +12,13 @@ MOQ, trạng thái PO, chống chạy trùng... đều do hàm ghi tự làm.
 """
 from __future__ import annotations
 
+import inspect
 import json
 
 from agent import tools as _tools
 from data import repository as _repo
 from services import audit_service as _audit
+from services import auth as _auth
 from services import calc as _calc
 from services import chat_service as _chat
 from services import clock as _clock
@@ -70,6 +72,10 @@ def round_up_moq(qty: float, moq: float | None) -> float:
     if not moq or moq <= 0:
         return float(qty)
     return _calc.round_up_moq(qty, moq)
+
+
+# Giờ chốt "kịp đơn đặt trước" lấy từ calc (QA1) để chú thích A/B không ghi lệch code.
+PREORDER_CUTOFF = _calc.PREORDER_CUTOFF
 
 
 # Ngưỡng cảnh báo mềm: đặt ít hơn lượng cần bổ sung, hoặc gấp hơn 3 lần.
@@ -179,6 +185,7 @@ def _alert_for_display(row: dict, ing_by_id: dict) -> dict:
     # options: lấy từ options_json; đánh đổi nằm trong từng phương án (khóa "tradeoff")
     options = _json_list(alert.get("options_json"))
     alert["options"] = options
+    alert["ai_fallback"] = bool(alert.get("ai_fallback"))
     by_letter = {o.get("option"): o for o in options}
     alert["tradeoff_a"] = (by_letter.get("A") or {}).get("tradeoff")
     alert["tradeoff_b"] = (by_letter.get("B") or {}).get("tradeoff")
@@ -266,5 +273,38 @@ def recover_stale_runs() -> list[int]:
     return _audit.recover_stale_runs()
 
 
-def ask_chat(question: str, user) -> dict:
-    return _chat.ask_chat(question, user)
+# Số lượt hỏi đáp gần nhất gửi kèm cho chat (đặc tả: 3–4 lượt). chat_service tự cắt mỗi câu ≤ 300 ký tự.
+CHAT_HISTORY_TURNS = 4
+
+
+def ask_chat(question: str, user, history=None) -> dict:
+    """Hỏi đáp chỉ đọc. Gửi kèm tối đa CHAT_HISTORY_TURNS lượt gần nhất để chat hiểu câu hỏi nối tiếp.
+
+    history: [{"question", "answer", "refused"}, ...] (đúng như st.session_state["chat_history"]).
+    Trả {"answer", "refused", "fallback"}; fallback = True khi AI không phản hồi, dùng câu dự phòng.
+    Bản chat_service chưa nhận history (trước PR MA2) thì vẫn chạy, chỉ không gửi lịch sử.
+    """
+    turns = [{"question": h.get("question", ""), "answer": h.get("answer", ""),
+              "refused": bool(h.get("refused"))} for h in (history or [])][-CHAT_HISTORY_TURNS:]
+    if "history" in inspect.signature(_chat.ask_chat).parameters:
+        result = _chat.ask_chat(question, user, history=turns)
+    else:
+        result = _chat.ask_chat(question, user)
+    return {"answer": result.get("answer", ""), "refused": bool(result.get("refused")),
+            "fallback": bool(result.get("fallback"))}
+
+
+# ---------------------------------------------------------------------------
+# Đăng nhập (services/auth.py – Duyên, DU2): giao diện không tự so PIN
+# ---------------------------------------------------------------------------
+def login_manager(name: str, pin: str):
+    """Quản lý: tên + PIN riêng; sai 5 lần liên tiếp thì khóa tên đó 5 phút.
+    Trả (user | None, câu thông báo tiếng Việt)."""
+    result = _auth.login_manager(name, pin)
+    return result.user, result.message
+
+
+def login_staff(name: str):
+    """Nhân viên: bắt buộc nhập tên để nhật ký ghi đúng người. Trả (user | None, câu thông báo)."""
+    result = _auth.login_staff(name)
+    return result.user, result.message
