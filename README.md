@@ -133,7 +133,7 @@ outbox/                file CSV của PO đã gửi
 | Hiện tượng | Cách xử lý |
 |---|---|
 | Đăng nhập quản lý báo "Chưa cấu hình PIN" | Kiểm tra file tên đúng `.env` (không phải `.env.txt`) và có dòng `MANAGER_PINS=` hoặc `MANAGER_PIN=` |
-| Rà soát báo FAILED, lỗi `no such column: ai_fallback` | Database tạo từ bản cũ: chạy lại `python data/init_db.py` |
+| Rà soát báo FAILED, Tab Nhật ký ghi lỗi `Bang alerts khong co cot: ['ai_fallback']` | Database tạo từ bản cũ: chạy lại `python data/init_db.py` |
 | Số liệu lạ (tồn âm bất thường, không có cảnh báo Kem tươi) | `init_db` và app đang chạy với `DEMO_DATE` khác nhau. Đặt `DEMO_DATE` trong `.env`, chạy lại `init_db` |
 | Cảnh báo ghi "Câu dự phòng – AI không phản hồi" | Không có mạng, sai hoặc hết hạn mức `GEMINI_API_KEY`, hoặc Gemini viết số không có trong dữ liệu. Số liệu và phương án A/B vẫn đúng vì do code tính |
 | `streamlit` không nhận lệnh | Chưa bật `.venv`, hoặc chưa `pip install -r requirements.txt` |
