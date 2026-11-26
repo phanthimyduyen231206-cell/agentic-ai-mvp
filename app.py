@@ -7,7 +7,6 @@ Nguyên tắc: file này CHỈ nhận thao tác và hiển thị, KHÔNG chứa 
 lấy qua services/ui_api.py (contracts Mục 11), kể cả MOQ và cảnh báo số lượng.
 Chạy data/init_db.py trước lần đầu.
 """
-import hmac
 import json
 import os
 import re
@@ -86,7 +85,7 @@ ORANGE_STYLE = "background-color: #ffe0b3; color: #7a3e00"
 # Hàm tiện ích hiển thị
 # ===========================================================================
 def load_env_file():
-    """Đọc file .env (nếu có) vào biến môi trường, để lấy MANAGER_PIN."""
+    """Đọc file .env (nếu có) vào biến môi trường: MANAGER_PINS, GEMINI_API_KEY, DEMO_DATE..."""
     env_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env")
     if not os.path.exists(env_path):
         return
@@ -178,32 +177,33 @@ MANAGER_ONLY_NOTE = "🔒 Chỉ quản lý (MANAGER) mới thao tác được �
 # Đăng nhập, thanh bên, banner
 # ===========================================================================
 def render_login():
+    """Đăng nhập: bắt buộc tên. Quản lý kiểm tra PIN riêng qua services/auth.py (sai 5 lần thì khóa
+    5 phút); giao diện không tự so PIN. Vai trò lấy từ kết quả đăng nhập, không lấy từ ô chọn."""
     st.title("🥐 Trợ lý cung ứng nguyên vật liệu - Tiệm bánh")
     st.subheader("Đăng nhập")
-    expected_pin = os.getenv("MANAGER_PIN", "")
     with st.form("login_form"):
         role = st.radio(
             "Vai trò", ["STAFF", "MANAGER"], horizontal=True,
-            format_func=lambda r: "Nhân viên (STAFF)" if r == "STAFF" else "Quản lý (MANAGER)")
-        name = st.text_input("Tên của bạn (không bắt buộc)")
-        pin = st.text_input("Mã PIN quản lý (chỉ cần khi chọn MANAGER)", type="password")
+            format_func=lambda r: "Nhân viên (chỉ xem)" if r == "STAFF" else "Quản lý")
+        name = st.text_input("Tên của bạn *", help="Bắt buộc, để nhật ký ghi đúng người thao tác.")
+        pin = st.text_input("Mã PIN quản lý (chỉ cần khi chọn Quản lý)", type="password")
         submitted = st.form_submit_button("Đăng nhập", type="primary")
     if submitted:
         if role == "MANAGER":
-            if not expected_pin:
-                st.error("Chưa cài mã PIN quản lý (biến MANAGER_PIN trong file .env). Hãy báo người quản trị hệ thống.")
-                return
-            if not hmac.compare_digest(pin.encode("utf-8"), expected_pin.encode("utf-8")):
-                st.error("Sai mã PIN.")
-                return
-        st.session_state["user"] = {"username": name.strip() or role.lower(), "role": role}
+            user, message = api.login_manager(name, pin)
+        else:
+            user, message = api.login_staff(name)
+        if user is None:
+            st.error(message)
+            return
+        st.session_state["user"] = user
         st.rerun()
 
 
 def render_sidebar(user):
     with st.sidebar:
         st.markdown(f"**Đang đăng nhập:** {user['username']}")
-        st.caption(f"Vai trò: {user['role']}")
+        st.caption("Vai trò: " + ("Quản lý" if user["role"] == "MANAGER" else "Nhân viên (chỉ xem)"))
         if st.button("Đăng xuất"):
             st.session_state.clear()
             st.rerun()
@@ -536,12 +536,21 @@ def render_options_table(alert):
     for o in alert["options"]:
         rows.append({
             "Phương án": o["option"], "NCC": o["sup_name"], "Đơn giá": fmt_money(o["unit_price"]),
-            "Số lượng": f"{fmt_qty(o['order_qty'])} {unit}", "Tổng tiền": fmt_money(o["total_cost"]),
+            "Số lượng đề xuất": f"{fmt_qty(o['order_qty'])} {unit}", "Tổng tiền": fmt_money(o["total_cost"]),
             "Thời gian giao": f"{o['lead_time_hours']} giờ", "Hàng về lúc": fmt_dt(o["arrival_at"]),
             "Kịp đơn sớm nhất?": "✅ Kịp" if o["meets_earliest_preorder"] else "❌ Không kịp",
             "Chênh lệch so với A": f"{o['cost_diff_pct_vs_A']:g}%", "Lý do": pretty_text(o["reason"]),
         })
     show_table(pd.DataFrame(rows))
+    cutoff = api.PREORDER_CUTOFF.strftime("%H:%M")
+    st.markdown(
+        "**Cách hệ thống chọn phương án** (tính bằng code, không qua AI):\n"
+        "- **A – Rẻ nhất:** tổng tiền thấp nhất; bằng nhau thì chọn NCC giao nhanh hơn.\n"
+        "- **B – Nhanh nhất:** thời gian giao ngắn nhất; bằng nhau thì chọn NCC rẻ hơn. "
+        "Vẫn bằng nhau thì ưu tiên NCC uy tín hơn.\n"
+        "- **Số lượng đề xuất:** đủ để tồn không xuống dưới mức tối thiểu trong 3 ngày tới "
+        "(hoặc tới lúc hàng về nếu giao lâu hơn), làm tròn lên theo MOQ của từng NCC.\n"
+        f"- **Kịp đơn:** hàng về trước {cutoff} ngày giao đơn đặt trước sớm nhất.")
 
 
 def render_choice_form(alert, user):
@@ -605,31 +614,41 @@ def alert_title(alert, superseded=frozenset()):
 
 
 def render_alert_detail(alert, user):
+    """Chi tiết cảnh báo chia 2 khối: số liệu do code tính, và phần diễn giải của AI."""
     unit = alert["unit"]
-    parts = []
-    for c in alert["causes"]:
-        star = "⭐ " if c["code"] == alert["main_cause"] else ""
-        qty_text = f" {fmt_qty(c['qty'])}" if c.get("qty") is not None else ""
-        parts.append(f"{star}{CAUSE_LABELS.get(c['code'], c['code'])}{qty_text}")
-    st.markdown(f"**Nguyên nhân** ({unit}): " + " · ".join(parts))
-    st.markdown(f"Tồn dự kiến **{fmt_qty(alert['projected_stock'])} {unit}** · Tối thiểu "
-                f"{fmt_qty(alert['min_stock'])} {unit} · Cần bổ sung **{fmt_qty(alert['shortage_qty'])} {unit}**")
-    if alert.get("explanation"):
-        st.info(f"🤖 **Diễn giải của Gemini:** {pretty_text(alert['explanation'])}")
+    with st.container(border=True):
+        st.markdown("#### 📊 Số liệu hệ thống")
+        st.caption("Tính bằng code từ dữ liệu kho, không qua AI.")
+        parts = []
+        for c in alert["causes"]:
+            star = "⭐ " if c["code"] == alert["main_cause"] else ""
+            qty_text = f" {fmt_qty(c['qty'])}" if c.get("qty") is not None else ""
+            parts.append(f"{star}{CAUSE_LABELS.get(c['code'], c['code'])}{qty_text}")
+        st.markdown(f"**Nguyên nhân** ({unit}): " + " · ".join(parts))
+        st.markdown(f"Tồn dự kiến **{fmt_qty(alert['projected_stock'])} {unit}** · Tối thiểu "
+                    f"{fmt_qty(alert['min_stock'])} {unit} · Cần bổ sung **{fmt_qty(alert['shortage_qty'])} {unit}**")
+        if alert.get("open_po_id"):
+            st.warning(f"Nguyên liệu này đang có PO chưa xử lý ({alert['open_po_id']}). "
+                       "Hệ thống không đề xuất phương án mới, hãy xử lý PO đó ở mục «PO cần xử lý».")
+        elif not alert["options"]:
+            st.warning(alert.get("note") or "Cần xử lý thủ công")
+        else:
+            render_options_table(alert)
+            if alert.get("note"):
+                st.caption(f"ℹ️ {alert['note']}")
 
-    if alert.get("open_po_id"):
-        st.warning(f"Nguyên liệu này đang có PO chưa xử lý ({alert['open_po_id']}). "
-                   "Hệ thống không đề xuất phương án mới, hãy xử lý PO đó ở mục «PO cần xử lý».")
-    elif not alert["options"]:
-        st.warning(alert.get("note") or "Cần xử lý thủ công")
-    else:
-        render_options_table(alert)
-        if alert.get("note"):
-            st.caption(f"ℹ️ {alert['note']}")
+    with st.container(border=True):
+        st.markdown("#### 🤖 Phân tích AI")
+        if alert.get("ai_fallback"):
+            st.warning(f"{FALLBACK_LABEL}. Phần dưới là câu mẫu do hệ thống tự sinh từ số liệu ở trên.")
+        if alert.get("explanation"):
+            st.markdown(f"**Diễn giải:** {pretty_text(alert['explanation'])}")
         if alert.get("tradeoff_a"):
             st.markdown(f"- **Đánh đổi A:** {pretty_text(alert['tradeoff_a'])}")
         if alert.get("tradeoff_b"):
             st.markdown(f"- **Đánh đổi B:** {pretty_text(alert['tradeoff_b'])}")
+        if not (alert.get("explanation") or alert.get("tradeoff_a") or alert.get("tradeoff_b")):
+            st.caption("Chưa có phân tích cho cảnh báo này.")
 
     status = alert["status"]
     if status == "OPEN" and not is_manager(user):
@@ -735,6 +754,8 @@ def render_tab2(user):
 # ===========================================================================
 # ====== TAB 3, TAB 4 VÀ HÀM MAIN ======
 # ===========================================================================
+FALLBACK_LABEL = "⚠️ Câu dự phòng – AI không phản hồi"
+
 CHAT_EXAMPLES = [
     "Kem tươi còn bao nhiêu và lô nào sắp hết hạn?",
     "3 ngày tới cần bao nhiêu bơ cho đơn đặt trước?",
@@ -745,7 +766,8 @@ CHAT_EXAMPLES = [
 def render_tab3(user):
     st.subheader("Hỏi đáp tồn kho (chỉ đọc)")
     st.caption("Hỏi về tồn kho, lô hàng, đơn đặt trước, NCC, PO. Khung chat chỉ xem số liệu, "
-               "không tạo hay sửa PO được. Tối đa 500 ký tự.")
+               "không tạo hay sửa PO được. Tối đa 500 ký tự. Chat nhớ "
+               f"{api.CHAT_HISTORY_TURNS} lượt hỏi gần nhất nên có thể hỏi nối tiếp.")
     st.caption("Ví dụ: " + " · ".join(f"«{q}»" for q in CHAT_EXAMPLES))
 
     history = st.session_state.setdefault("chat_history", [])
@@ -753,6 +775,8 @@ def render_tab3(user):
         with st.chat_message("user"):
             st.markdown(item["question"])
         with st.chat_message("assistant"):
+            if item.get("fallback"):
+                st.caption(FALLBACK_LABEL)
             if item["refused"]:
                 st.warning(pretty_text(item["answer"]))
             else:
@@ -768,9 +792,9 @@ def render_tab3(user):
         st.rerun()
     if asked and question.strip():
         with st.spinner("Đang tra cứu..."):
-            result = api.ask_chat(question, user)
+            result = api.ask_chat(question, user, history=history)
         history.append({"question": question.strip(), "answer": result["answer"],
-                        "refused": result["refused"]})
+                        "refused": result["refused"], "fallback": result["fallback"]})
         st.rerun()
 
 
@@ -785,10 +809,10 @@ EVENT_LABELS = {
     "DELIVERY_DELAYED": "⚠️ Giao trễ", "DELIVERY_RECEIVED": "📥 Nhận hàng",
     "BATCH_RECEIVED": "📦 Nhập lô mới", "STOCK_ISSUED": "📤 Xuất kho",
     "GUARDRAIL_BLOCKED": "⛔ Bị chặn", "CHAT_ANSWERED": "💬 Chat trả lời",
-    "CHAT_REFUSED": "⚠️ Chat từ chối",
+    "CHAT_REFUSED": "⚠️ Chat từ chối", "CHAT_FAILED": "⚠️ Chat dùng câu dự phòng",
 }
 RED_EVENTS = {"RUN_FAILED", "PO_SEND_FAILED", "GUARDRAIL_BLOCKED"}
-ORANGE_EVENTS = {"RUN_REJECTED_DUPLICATE", "DELIVERY_DELAYED", "CHAT_REFUSED"}
+ORANGE_EVENTS = {"RUN_REJECTED_DUPLICATE", "DELIVERY_DELAYED", "CHAT_REFUSED", "CHAT_FAILED"}
 ACTION_LABELS = {
     "create_draft_po": "tạo PO", "approve_po": "duyệt PO", "reject_po": "từ chối PO",
     "cancel_po": "hủy PO", "send_po": "gửi PO", "mark_received": "nhận hàng",
@@ -847,14 +871,15 @@ def describe_log(log, ing_by_id, sup_names, po_by_id):
         text = f"Có {d.get('alert_count', 0)} cảnh báo"
         if d.get("superseded"):
             text += f" · Đóng {len(d['superseded'])} cảnh báo cũ của phiên trước"
-        return text + (" · Gemini không phản hồi, dùng câu mẫu" if d.get("fallback") else "")
+        return text + (" · AI không phản hồi, dùng câu dự phòng" if d.get("fallback") else "")
     if ev in ("RUN_FAILED", "RUN_REJECTED_DUPLICATE", "PO_SEND_FAILED"):
         return d.get("error") or d.get("message") or d.get("reason") or ""
     if ev == "DELIVERY_DELAYED":
         return f"Hạn giao {fmt_date(d.get('expected_delivery_date'))} đã qua mà chưa nhận hàng"
     if ev == "ALERT_CREATED":
         cause = CAUSE_LABELS.get(d.get("main_cause"), d.get("main_cause") or "")
-        return f"{ing_name} thiếu hàng · nguyên nhân chính: {cause}"
+        text = f"{ing_name} thiếu hàng · nguyên nhân chính: {cause}"
+        return text + (" · Diễn giải là câu dự phòng (AI không phản hồi)" if d.get("ai_fallback") else "")
     if ev == "OPTION_SELECTED":
         return f"Chọn phương án {d.get('option')}: {sup}, số lượng {qty}"
     if ev == "PO_APPROVED":
@@ -889,6 +914,8 @@ def describe_log(log, ing_by_id, sup_names, po_by_id):
         return f"Chặn khi {action} · {d.get('message', '')}"
     if ev == "CHAT_ANSWERED":
         return f"Hỏi: «{d.get('question', '')}»"
+    if ev == "CHAT_FAILED":
+        return f"Hỏi: «{d.get('question', '')}» · AI không phản hồi, trả câu dự phòng"
     if ev == "CHAT_REFUSED":
         reason = {"EMPTY": "câu hỏi trống", "TOO_LONG": "câu hỏi quá dài"}.get(
             d.get("reason"), "yêu cầu ghi dữ liệu hoặc ngoài phạm vi")
@@ -963,7 +990,8 @@ def render_tab4(user):
             row["detail_json"] = log["detail_json"] or ""
         rows.append(row)
     df = pd.DataFrame(rows)
-    st.caption("Mới nhất ở trên. Dòng ĐỎ = bị chặn hoặc lỗi; dòng CAM = cần chú ý (giao trễ, chat từ chối, chạy trùng).")
+    st.caption("Mới nhất ở trên. Dòng ĐỎ = bị chặn hoặc lỗi; dòng CAM = cần chú ý "
+               "(giao trễ, chat từ chối, chat dùng câu dự phòng, chạy trùng).")
     show_table(df.style.apply(log_row_styler([log["event_type"] for log in logs]), axis=1), max_height=520)
 
 
