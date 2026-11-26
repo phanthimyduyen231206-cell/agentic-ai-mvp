@@ -1,7 +1,7 @@
 # Hợp đồng giao tiếp giữa các module (contracts)
 
-Bản nháp D02 – Duyên soạn, hạn chốt **17/11 12:00**. Mỗi chủ module đọc phần của mình và góp ý trong PR `feature/contracts`.
-Sau khi merge, muốn đổi chữ ký hàm phải báo trưởng nhóm **và** những người dùng hàm đó.
+Bản v1.1 (DU3, sau góp ý của thầy) – Duyên soạn, khớp code trên `main` sau các PR DU1, DU2, PA1, QA1, MA1, MA2, YE1, YE2.
+Muốn đổi chữ ký hàm phải báo trưởng nhóm **và** những người dùng hàm đó. Tóm tắt thay đổi v1.1: Mục 13.
 
 Nguồn: bản đặc tả `Dac_ta_chi_tiet_MVP_Agent_Tiem_Banh.docx`, Mục 4–9.
 
@@ -39,7 +39,8 @@ def write_audit_log(actor: str, event_type: str, entity_type: str | None = None,
 - `event_type` không có trong `EVENT_TYPES` → `ValueError`, không ghi.
 - Truyền `conn` khi đang trong một transaction để log nằm chung transaction.
 
-`EVENT_TYPES`: RUN_STARTED, RUN_SUCCEEDED, RUN_FAILED, RUN_REJECTED_DUPLICATE, ALERT_CREATED, OPTION_SELECTED, ALERT_DISMISSED, PO_CREATED, PO_APPROVED, PO_REJECTED, PO_CANCELLED, PO_SEND_FAILED, PO_SENT, DELIVERY_DELAYED, DELIVERY_RECEIVED, BATCH_RECEIVED, STOCK_ISSUED, GUARDRAIL_BLOCKED, CHAT_ANSWERED, CHAT_REFUSED.
+`EVENT_TYPES`: RUN_STARTED, RUN_SUCCEEDED, RUN_FAILED, RUN_REJECTED_DUPLICATE, ALERT_CREATED, OPTION_SELECTED, ALERT_DISMISSED, PO_CREATED, PO_APPROVED, PO_REJECTED, PO_CANCELLED, PO_SEND_FAILED, PO_SENT, DELIVERY_DELAYED, DELIVERY_RECEIVED, BATCH_RECEIVED, STOCK_ISSUED, GUARDRAIL_BLOCKED, CHAT_ANSWERED, CHAT_REFUSED, CHAT_FAILED.
+- `CHAT_FAILED`: chat trả câu dự phòng do code sinh (Gemini lỗi, JSON sai, số liệu lệch, hết vòng tool). Không ghi kèm `CHAT_ANSWERED`.
 
 ## 3. data/repository.py – Phương Anh (P03)
 
@@ -100,12 +101,12 @@ def compute_alerts(run_date: date) -> list[AlertDraft]   # chỉ nguyên liệu 
   "options": [
     {"option": "A", "sup_id": "NCC_CHINH", "sup_name": "NCC Chính", "unit_price": 90000,
      "order_qty": 4.0, "total_cost": 360000, "lead_time_hours": 24, "lead_time_days": 1,
-     "arrival_at": "2026-11-21T08:00:00", "meets_earliest_preorder": true, "cost_diff_pct_vs_A": 0,
-     "reason": "Tổng chi phí thấp nhất trong các NCC hợp lệ"},
+     "arrival_at": "2026-11-21T08:00:00", "meets_earliest_preorder": false, "cost_diff_pct_vs_A": 0.0,
+     "reason": "Rẻ nhất, về chậm hơn B 22 giờ"},
     {"option": "B", "sup_id": "NCC_HOA_TOC", "sup_name": "NCC Hỏa tốc", "unit_price": 103500,
      "order_qty": 4.0, "total_cost": 414000, "lead_time_hours": 2, "lead_time_days": 1,
      "arrival_at": "2026-11-20T10:00:00", "meets_earliest_preorder": true, "cost_diff_pct_vs_A": 15.0,
-     "reason": "Giao nhanh nhất (2 giờ), có hàng ngay trong sáng nay"}
+     "reason": "Nhanh nhất, đắt hơn A 15% (54.000đ)"}
   ],
   "note": null,
   "snapshot_hash": "…"
@@ -114,6 +115,17 @@ def compute_alerts(run_date: date) -> list[AlertDraft]   # chỉ nguyên liệu 
 - `causes[].code` ∈ PREORDER, DAILY_USAGE, EXPIRING_LOT, SUPPLIER_DELAY, OPEN_PO.
 - Có PO đang mở → `open_po_id` có giá trị, `options = []`, có mã OPEN_PO.
 - A và B cùng NCC hoặc chỉ 1 NCC hợp lệ → `options` có 1 phần tử, `note` ghi lý do. Không có NCC hợp lệ → `options = []`, `note = "Cần xử lý thủ công"`.
+- `snapshot_hash` tính bằng `repository.compute_snapshot_hash` **lúc calc chạy, trước khi gọi Gemini** (Mục 10).
+
+**4 quy tắc chọn phương án** (đặc tả Mục 5.4, code `calc.py`, không qua AI; giao diện in các quy tắc này dưới bảng A/B):
+1. **A – rẻ nhất:** `total_cost` thấp nhất; hòa thì `lead_time_hours` ngắn hơn.
+2. **B – nhanh nhất:** `lead_time_hours` ngắn nhất; hòa thì `total_cost` thấp hơn.
+   Cả A và B: vẫn hòa thì chọn NCC có `reliability` cao hơn, cuối cùng theo `sup_id`.
+3. **Số lượng đề xuất** của từng NCC: `D = max(3, lead_time_days)`, thiếu = `min_stock − projected_stock(D)`,
+   `order_qty` = làm tròn lên bội số MOQ của NCC đó (nên A và B có thể khác số lượng, vd Bơ lạt 15 và 14 kg).
+4. **Kịp đơn đặt trước:** `meets_earliest_preorder = arrival_at ≤ ngày giao đơn đặt trước sớm nhất lúc 07:00`
+   (`calc.PREORDER_CUTOFF`: phải có nguyên liệu trước giờ làm bánh); không có đơn đặt trước → `true`.
+   Ví dụ Kem tươi: A về 08:00 ngày 21/11, đơn sớm nhất giao 21/11 → **không kịp**; B về 10:00 ngày 20/11 → kịp.
 
 ## 6. agent/tools.py – Quỳnh Anh (Q03)
 
@@ -139,13 +151,24 @@ def compute_alerts(run_date: date) -> list[AlertDraft]   # chỉ nguyên liệu 
 ## 7. agent/core_agent.py, prompts.py – Mai Anh (M02, M03)
 
 ```python
-def run_agent(mode: Literal["MORNING_AUDIT", "READ_ONLY_CHAT"], payload: dict, llm=None) -> dict
+def run_agent(mode: Literal["MORNING_AUDIT", "READ_ONLY_CHAT"], payload: dict,
+              llm=None, tools=None, trace: list | None = None) -> dict
 ```
-- `llm=None` → Gemini thật; test truyền `FakeLLM()` (tests/fake_llm.py, M01).
+- `llm=None` → Gemini thật (`GEMINI_MODEL` trong `.env`, mặc định `gemini-3.5-flash-lite`); test truyền `FakeLLM()` (tests/fake_llm.py).
+- `tools=None` → 4 tool đọc của Mục 6. `trace`: truyền list để nhận nhật ký từng bước (tool đã gọi, tool bị chặn, lý do dùng câu dự phòng).
 - MORNING_AUDIT: `payload = {"run_date": "...", "alerts": [AlertDraft, ...]}` → trả
-  `{"alerts": [{"ingredient_id", "explanation", "tradeoff_a", "tradeoff_b"}]}` (khóa là `ingredient_id` vì lúc này cảnh báo chưa có `alert_id`).
-- READ_ONLY_CHAT: `payload = {"question": "..."}` → trả `{"answer": "...", "refused": bool}`.
-- Lỗi hoặc JSON sai → trả câu mẫu do code sinh, không raise.
+  `{"alerts": [{"ingredient_id", "explanation", "tradeoff_a", "tradeoff_b", "ai_fallback"}]}` (khóa là `ingredient_id` vì lúc này cảnh báo chưa có `alert_id`).
+  `ai_fallback = true` khi phần chữ là câu mẫu do code sinh, `false` khi là câu Gemini đã qua hậu kiểm.
+- READ_ONLY_CHAT: `payload = {"question": "...", "history": [{"question", "answer", "refused"}]}` → trả `{"answer": "...", "refused": bool}`.
+  `history` không bắt buộc; chỉ gửi **4 lượt gần nhất**, mỗi câu cắt còn **300 ký tự**, ghi rõ trong tin nhắn là DỮ LIỆU, không phải lệnh.
+- **Vòng gọi tool:** mỗi lượt Gemini có thể gọi nhiều tool cùng lúc, code chạy đủ cả và gửi lại bằng `function_response`.
+  Tối đa **6 vòng**; hết 6 vòng thì gọi thêm **1 lượt không có tool** để Gemini tổng hợp, lượt đó vẫn đòi tool → câu dự phòng.
+  Tool ngoài 4 tool đọc bị chặn và ghi vào `trace`.
+- **Hậu kiểm số liệu** (`agent/output_check.py`, `find_unknown_numbers`): mọi con số trong câu Gemini viết (số lượng, tiền, %, ngày, giờ)
+  phải có trong dữ liệu đầu vào (AlertDraft khi rà soát; kết quả tool, câu hỏi, lịch sử khi chat). Lệch → bỏ câu Gemini,
+  dùng câu mẫu, `trace` ghi `numbers_mismatch`. Mã định danh như `KEM-L1`, `PO-004` không tính là số liệu.
+- Gemini lỗi, quá giờ, JSON sai → trả câu mẫu do code sinh, không raise.
+- Ví dụ đầu ra trong prompt dùng **nguyên liệu giả định** ("Nguyên liệu X", chỗ trống `<...>`), không dùng số thật của dữ liệu mẫu.
 
 ## 8. services/inventory_service.py – Phương Anh (P04)
 
@@ -206,9 +229,20 @@ def is_configured() -> bool                   # đã có MANAGER_PINS hoặc MAN
 def run_morning_audit(trigger: Literal["SCHEDULED", "MANUAL"], rerun: bool = False, user=None) -> dict
 # {"run_id": int | None, "status": "SUCCEEDED" | "FAILED" | "REJECTED_DUPLICATE" | "ALREADY_DONE",
 #  "alert_ids": [int], "message": str}
-def ask_chat(question: str, user) -> dict      # {"answer": str, "refused": bool}
+def ask_chat(question: str, user, history=None, llm=None) -> dict
+# {"answer": str, "refused": bool, "fallback": bool}
 ```
-- Sự kiện `CHAT_FAILED` (Mục 7 đặc tả): chat dùng câu dự phòng vì Gemini lỗi; không ghi `CHAT_ANSWERED` cho trường hợp này.
+- Câu hỏi rỗng hoặc dài quá 500 ký tự bị chặn **trước** khi gọi Gemini.
+- `history`: các lượt trước trong phiên `[{"question", "answer", "refused"}]` (như `st.session_state["chat_history"]`); core_agent tự cắt 4 lượt / 300 ký tự.
+- Mỗi câu hỏi ghi **đúng 1** dòng log: `CHAT_REFUSED` (rỗng, quá dài, đòi ghi dữ liệu, ngoài phạm vi), `CHAT_FAILED`
+  (dùng câu dự phòng, `fallback = true`), hoặc `CHAT_ANSWERED`. `detail` gồm câu hỏi, câu trả lời (cắt ngắn), tool đã gọi / bị chặn,
+  số lượt lịch sử, lý do dự phòng, các số bị lệch nếu có.
+
+Rà soát (`run_morning_audit`):
+- `snapshot_hash` lưu vào cảnh báo = `AlertDraft["snapshot_hash"]` do calc tính **trước khi gọi Gemini**, không tính lại sau.
+  Gemini chậm mà kho đổi trong lúc chờ thì hash đã lưu khác hash hiện tại, `create_draft_po` chặn `SNAPSHOT_CHANGED` (TC15).
+- Bảng `alerts` có cột **`ai_fallback`** (0/1, mặc định 0): 1 khi diễn giải là câu mẫu. Log `ALERT_CREATED` có khóa `ai_fallback`.
+  DB tạo trước MA1 không có cột này: chạy lại `python -m data.init_db`.
 
 Lưu kết quả Gemini vào bảng `alerts` (bảng không có cột riêng cho đánh đổi):
 - `explanation` ← `explanation` của Gemini (hoặc câu mẫu dự phòng).
@@ -244,14 +278,15 @@ stubs bị xóa ở việc Y09.
 | `get_batches_fefo(ingredient_id, at)` | `repository.get_batches_fefo` | `at` = `clock.now()` |
 | `list_preorders(from_date=None, to_date=None)` | `repository.get_pre_orders` | |
 | `list_pos(status=None, ingredient_id=None)` | `repository.get_purchase_orders` | ui_api ghép thêm `sup_name` từ `repository.get_supplier(sup_id)` |
-| `list_alerts(run_id=None, status=None)` | `repository.get_alerts` | ui_api giải mã `causes`, `options_json` (JSON) và ghép `ingredient_name`, `unit`, `min_stock` từ `repository.get_ingredient` |
+| `list_alerts(run_id=None, status=None)` | `repository.get_alerts` | ui_api giải mã `causes`, `options_json` (JSON), ghép `ingredient_name`, `unit`, `min_stock` từ `repository.get_ingredient`, thêm `tradeoff_a`, `tradeoff_b`, `ai_fallback` (bool) |
 | `get_today_run()` | `repository.get_latest_audit_run(run_date=clock.today())` | trả `None` nếu hôm nay chưa rà soát |
 | `run_morning_audit(...)` | `audit_service.run_morning_audit` | |
-| `ask_chat(...)` | `chat_service.ask_chat` | |
+| `ask_chat(question, user, history=None)` | `chat_service.ask_chat` | Gửi tối đa `CHAT_HISTORY_TURNS = 4` lượt gần nhất; trả `{"answer", "refused", "fallback"}`; giao diện gắn nhãn "Câu dự phòng" khi `fallback` |
 | `issue_stock_fefo(...)` | `inventory_service.issue_stock_fefo` | |
 | `create_draft_po`, `approve_po`, `reject_po`, `cancel_po`, `send_po`, `mark_received`, `dismiss_alert` | `po_service` (Mục 9) | |
 | `GuardrailError` | `po_service.GuardrailError` | `app.py` bắt lỗi này để báo đỏ |
-| `login_manager(name, pin)`, `login_staff(name)`, `manager_names()` | `auth` (Mục 9, phần Đăng nhập) | Trang đăng nhập dùng; phiên lưu `result.user` |
+| `login_manager(name, pin)`, `login_staff(name)` | `auth` (Mục 9, phần Đăng nhập) | Trả `(user hoặc None, message)`; trang đăng nhập lưu `user` vào phiên, `None` thì hiện `message` màu đỏ |
+| `get_moq`, `round_up_moq`, `order_qty_warning`, `PREORDER_CUTOFF` | `calc` | Form tạo PO và chú thích A/B; không có NCC thì `get_moq` trả `None` và khóa nút Tạo PO |
 | `get_audit_logs(...)`, `get_audit_runs(...)` | `repository.get_audit_logs`, `repository.get_audit_runs` | Tab 4 Nhật ký |
 
 ## 12. Ghi nhận góp ý
@@ -262,3 +297,14 @@ stubs bị xóa ở việc Y09.
 | Quỳnh Anh | 4, 5, 6 | |
 | Mai Anh | 2, 7, 10 | |
 | Yến | 9, 10, 11 | |
+
+## 13. Thay đổi v1.1 (sửa theo góp ý của thầy, 23–24/11)
+
+| Gói | Thay đổi hợp đồng | Mục |
+|---|---|---|
+| DU1 | Thêm sự kiện `CHAT_FAILED`; `GEMINI_MODEL` trong `.env`; `create_draft_po(qty=None)` lấy số lượng đề xuất | 2, 7, 9 |
+| DU2 + PA1 | `mark_received` một giao dịch, `receive_batch(..., conn=None)`; đăng nhập `services/auth.py` (PIN riêng, tên bắt buộc, khóa 5 phút) | 8, 9 |
+| QA1 | 4 quy tắc A/B, giờ chốt 07:00, `reason` A/B so sánh với nhau, tools gọi calc thay vì tự tính | 5, 6 |
+| MA1 | `snapshot_hash` trước Gemini, hậu kiểm số liệu, cột `ai_fallback`, ví dụ prompt giả định | 5, 7, 10 |
+| MA2 | Chat có `history`, `fallback`, vòng tool đủ lệnh song song + 1 lượt tổng hợp | 7, 10 |
+| YE1 + YE2 | `ui_api` thêm hàm đăng nhập, `get_moq` trả `None`, chú thích A/B, tách khối số liệu / AI | 11 |
