@@ -12,8 +12,11 @@ MOQ, trạng thái PO, chống chạy trùng... đều do hàm ghi tự làm.
 """
 from __future__ import annotations
 
+import csv
 import inspect
 import json
+import os
+from pathlib import Path
 
 from agent import tools as _tools
 from data import repository as _repo
@@ -281,7 +284,8 @@ def ask_chat(question: str, user, history=None) -> dict:
     """Hỏi đáp chỉ đọc. Gửi kèm tối đa CHAT_HISTORY_TURNS lượt gần nhất để chat hiểu câu hỏi nối tiếp.
 
     history: [{"question", "answer", "refused"}, ...] (đúng như st.session_state["chat_history"]).
-    Trả {"answer", "refused", "fallback"}; fallback = True khi AI không phản hồi, dùng câu dự phòng.
+    Trả {"answer", "refused", "fallback", "sources"}; fallback = True khi AI không phản hồi, dùng câu
+    dự phòng; sources = [{"doc", "title"}] tài liệu quy định chat đã dùng (G5), chưa có thì [].
     Bản chat_service chưa nhận history (trước PR MA2) thì vẫn chạy, chỉ không gửi lịch sử.
     """
     turns = [{"question": h.get("question", ""), "answer": h.get("answer", ""),
@@ -291,7 +295,86 @@ def ask_chat(question: str, user, history=None) -> dict:
     else:
         result = _chat.ask_chat(question, user)
     return {"answer": result.get("answer", ""), "refused": bool(result.get("refused")),
-            "fallback": bool(result.get("fallback"))}
+            "fallback": bool(result.get("fallback")), "sources": _sources(result.get("sources"))}
+
+
+def _sources(value) -> list[dict]:
+    """Chuyển nguyên khóa sources của chat (G5), chỉ giữ phần tử hợp lệ {"doc", "title"}."""
+    out = []
+    for s in value or []:
+        if isinstance(s, dict) and s.get("doc"):
+            out.append({"doc": str(s["doc"]), "title": str(s.get("title") or s["doc"])})
+    return out
+
+
+# ---------------------------------------------------------------------------
+# Cấu hình v2: công cụ của Agent (AGENT_TOOLS, MA5) và theo dõi AI (LANGSMITH_TRACING, MA4) – G1
+# ---------------------------------------------------------------------------
+def tool_mode() -> str:
+    """"mcp" khi AGENT_TOOLS=mcp, còn lại "local" (gọi trực tiếp các hàm Python)."""
+    return "mcp" if os.getenv("AGENT_TOOLS", "local").strip().lower() == "mcp" else "local"
+
+
+def tracing_enabled() -> bool:
+    """LANGSMITH_TRACING=true thì mỗi lần gọi AI có link trace trên LangSmith."""
+    return os.getenv("LANGSMITH_TRACING", "false").strip().lower() in ("1", "true", "yes", "on")
+
+
+# ---------------------------------------------------------------------------
+# Kết quả Evals (YE6 ghi, giao ước G7) – tab "Đánh giá Agent" chỉ đọc
+# ---------------------------------------------------------------------------
+EVALS_RESULTS_DIR = Path(__file__).resolve().parent.parent / "evals" / "results"
+EVAL_SUMMARY_KEYS = ("run_at", "tag", "mode", "agent_tools", "n", "pass_rate", "numbers_ok", "refusal_ok",
+                     "tools_ok", "source_ok", "recall_at_3", "fallback_rate", "latency_ms_avg", "tokens_avg",
+                     "by_group")
+_EVAL_BOOL_COLUMNS = ("passed", "numbers_ok", "refusal_ok", "tools_ok", "source_ok", "retrieval_hit",
+                      "main_cause_ok", "fallback")
+_EVAL_INT_COLUMNS = ("latency_ms", "tokens")
+
+
+def get_eval_summary() -> dict | None:
+    """Đọc evals/results/summary.json. Chưa có file hoặc file hỏng thì trả None.
+    Luôn có đủ khóa G7: khóa nào thiếu thì là None; by_group luôn là dict."""
+    path = Path(EVALS_RESULTS_DIR) / "summary.json"
+    try:
+        data = json.loads(path.read_text(encoding="utf-8-sig"))
+    except (OSError, ValueError):
+        return None
+    if not isinstance(data, dict):
+        return None
+    summary = {k: data.get(k) for k in EVAL_SUMMARY_KEYS}
+    if not isinstance(summary["by_group"], dict):
+        summary["by_group"] = {}
+    return summary
+
+
+def _eval_cell(column: str, value):
+    if value is None or value == "":
+        return None
+    if column in _EVAL_BOOL_COLUMNS:
+        return {"true": True, "false": False}.get(str(value).strip().lower())
+    if column in _EVAL_INT_COLUMNS:
+        try:
+            return int(float(value))
+        except ValueError:
+            return None
+    return value
+
+
+def get_eval_rows(group: str | None = None, passed: bool | None = None) -> list[dict]:
+    """Các dòng của evals/results/latest.csv (cột G7), đổi "True"/"False" sang bool, ô trống sang None.
+    Lọc theo nhóm câu hỏi (group) và kết quả (passed). Chưa có file thì trả []."""
+    path = Path(EVALS_RESULTS_DIR) / "latest.csv"
+    try:
+        with open(path, encoding="utf-8-sig", newline="") as f:
+            rows = [{k: _eval_cell(k, v) for k, v in row.items() if k} for row in csv.DictReader(f)]
+    except (OSError, csv.Error, UnicodeDecodeError):
+        return []
+    if group:
+        rows = [r for r in rows if r.get("group") == group]
+    if passed is not None:
+        rows = [r for r in rows if r.get("passed") is passed]
+    return rows
 
 
 # ---------------------------------------------------------------------------

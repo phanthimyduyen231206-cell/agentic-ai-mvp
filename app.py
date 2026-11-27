@@ -1,4 +1,4 @@
-"""app.py - Giao diện Streamlit 4 tab: Kho, Rà soát, Hỏi đáp, Nhật ký (Yến).
+"""app.py - Giao diện Streamlit 5 tab: Kho, Rà soát, Hỏi đáp, Nhật ký, Đánh giá Agent (Yến).
 
 Chạy:  streamlit run app.py
 
@@ -7,6 +7,7 @@ Nguyên tắc: file này CHỈ nhận thao tác và hiển thị, KHÔNG chứa 
 lấy qua services/ui_api.py (contracts Mục 11), kể cả MOQ và cảnh báo số lượng.
 Chạy data/init_db.py trước lần đầu.
 """
+import html
 import json
 import os
 import re
@@ -60,6 +61,9 @@ button[data-baseweb="tab"] p, [data-testid="stTab"] p { font-size: 1rem; font-we
 [data-testid="stTabs"] [data-testid="stTab"], div[data-baseweb="tab-list"] button[data-baseweb="tab"] {
     flex: 1 1 0; justify-content: center; }
 [data-testid="stTab"][data-focus-visible] { box-shadow: none; }
+/* Link "Xem chi tiết AI" trong bảng nhật ký */
+.bk-table a { color: #B45309; font-weight: 600; text-decoration: none; }
+.bk-table a:hover { text-decoration: underline; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -171,6 +175,7 @@ def is_manager(user):
 
 
 MANAGER_ONLY_NOTE = "🔒 Chỉ quản lý (MANAGER) mới thao tác được ở đây."
+TOOL_MODE_LABELS = {"mcp": "Công cụ: MCP", "local": "Công cụ: Gọi trực tiếp"}
 
 
 # ===========================================================================
@@ -204,6 +209,10 @@ def render_sidebar(user):
     with st.sidebar:
         st.markdown(f"**Đang đăng nhập:** {user['username']}")
         st.caption("Vai trò: " + ("Quản lý" if user["role"] == "MANAGER" else "Nhân viên (chỉ xem)"))
+        st.divider()
+        st.caption(TOOL_MODE_LABELS[api.tool_mode()])
+        st.caption("Theo dõi AI: " + ("Bật" if api.tracing_enabled() else "Tắt"))
+        st.divider()
         if st.button("Đăng xuất"):
             st.session_state.clear()
             st.rerun()
@@ -251,27 +260,40 @@ def styled_table(df, style_by_prefix):
 
 
 # Cột chứa câu dài thì để căn trái cho dễ đọc; các cột còn lại căn giữa.
-LEFT_ALIGNED_COLUMNS = {"Nội dung", "Lý do", "Ghi chú", "Lỗi"}
+LEFT_ALIGNED_COLUMNS = {"Nội dung", "Lý do", "Ghi chú", "Lỗi", "Câu trả lời"}
 
 
 def _cell_text(value):
     return fmt_qty(value) if isinstance(value, float) else value
 
 
-def show_table(data, max_height=None):
+def link_html(url, text):
+    """Thẻ <a> mở tab mới. Chỉ nhận link http(s); link lạ thì trả chuỗi rỗng."""
+    url = str(url or "")
+    if not url.startswith(("https://", "http://")):
+        return ""
+    return (f'<a href="{html.escape(url, quote=True)}" target="_blank" rel="noopener noreferrer">'
+            f"{html.escape(text)}</a>")
+
+
+def show_table(data, max_height=None, html_columns=()):
     """Vẽ bảng dạng HTML để căn giữa được cả TIÊU ĐỀ cột (st.dataframe không làm được).
     data: DataFrame, hoặc Styler đã tô màu hàng (styled_table, log_row_styler).
-    max_height: bảng dài thì cuộn trong khung cao tối đa bấy nhiêu px, tiêu đề đứng yên."""
+    max_height: bảng dài thì cuộn trong khung cao tối đa bấy nhiêu px, tiêu đề đứng yên.
+    html_columns: cột chứa HTML do code tự dựng (vd link_html), không escape; các cột khác luôn escape."""
     styler = data if not isinstance(data, pd.DataFrame) else data.style
     columns = list(styler.data.columns)
     styler = styler.format(_cell_text, escape="html").hide(axis="index")
+    raw = [c for c in html_columns if c in columns]
+    if raw:
+        styler = styler.format(lambda v: v or "", subset=raw, escape=None)
     left = [c for c in columns if c in LEFT_ALIGNED_COLUMNS]
     if left:
         styler = styler.set_properties(subset=left, **{"text-align": "left", "white-space": "normal",
                                                       "min-width": "260px"})
-    html = " ".join(line.strip() for line in styler.to_html().splitlines())
+    table_html = " ".join(line.strip() for line in styler.to_html().splitlines())
     box = f' style="max-height:{max_height}px"' if max_height else ""
-    st.markdown(f'<div class="bk-table"{box}>{html}</div>', unsafe_allow_html=True)
+    st.markdown(f'<div class="bk-table"{box}>{table_html}</div>', unsafe_allow_html=True)
 
 
 # ---------------------------------------------------------------------------
@@ -760,12 +782,14 @@ CHAT_EXAMPLES = [
     "Kem tươi còn bao nhiêu và lô nào sắp hết hạn?",
     "3 ngày tới cần bao nhiêu bơ cho đơn đặt trước?",
     "PO nào đang giao trễ?",
+    "Kem tươi bảo quản thế nào?",
+    "Nhận hàng cần kiểm tra gì?",
 ]
 
 
 def render_tab3(user):
     st.subheader("Hỏi đáp tồn kho (chỉ đọc)")
-    st.caption("Hỏi về tồn kho, lô hàng, đơn đặt trước, NCC, PO. Khung chat chỉ xem số liệu, "
+    st.caption("Hỏi về tồn kho, lô hàng, đơn đặt trước, NCC, PO và quy định của tiệm. Khung chat chỉ xem số liệu, "
                "không tạo hay sửa PO được. Tối đa 500 ký tự. Chat nhớ "
                f"{api.CHAT_HISTORY_TURNS} lượt hỏi gần nhất nên có thể hỏi nối tiếp.")
     st.caption("Ví dụ: " + " · ".join(f"«{q}»" for q in CHAT_EXAMPLES))
@@ -781,6 +805,8 @@ def render_tab3(user):
                 st.warning(pretty_text(item["answer"]))
             else:
                 st.markdown(pretty_text(item["answer"]))
+            for source in item.get("sources") or []:
+                st.caption(f"📄 Nguồn: {source['title']}")
 
     with st.form("chat_form", clear_on_submit=True):
         question = st.text_input("Câu hỏi của bạn", max_chars=500, key="chat_question")
@@ -794,7 +820,8 @@ def render_tab3(user):
         with st.spinner("Đang tra cứu..."):
             result = api.ask_chat(question, user, history=history)
         history.append({"question": question.strip(), "answer": result["answer"],
-                        "refused": result["refused"], "fallback": result["fallback"]})
+                        "refused": result["refused"], "fallback": result["fallback"],
+                        "sources": result.get("sources") or []})
         st.rerun()
 
 
@@ -977,6 +1004,7 @@ def render_tab4(user):
             sup_names.setdefault(s_row["sup_id"], s_row["name"])
 
     rows = []
+    has_trace = any(log_detail(log).get("trace_url") for log in logs)
     for log in logs:
         row = {
             "Thời điểm": fmt_dt(log["created_at"]), "Ai thực hiện": "⚙️ Hệ thống" if is_auto_superseded(log) else fmt_actor(log["actor"]),
@@ -985,6 +1013,8 @@ def render_tab4(user):
             "Đối tượng": fmt_entity(log, ing_by_id),
             "Nội dung": as_sentences(pretty_text(describe_log(log, ing_by_id, sup_names, po_by_id))),
         }
+        if has_trace:  # chỉ có khi bật theo dõi AI (LANGSMITH_TRACING=true, giao ước G2)
+            row[TRACE_COLUMN] = link_html(log_detail(log).get("trace_url"), "Xem chi tiết AI")
         if show_raw:
             row["event_type"] = log["event_type"]
             row["detail_json"] = log["detail_json"] or ""
@@ -992,7 +1022,115 @@ def render_tab4(user):
     df = pd.DataFrame(rows)
     st.caption("Mới nhất ở trên. Dòng ĐỎ = bị chặn hoặc lỗi; dòng CAM = cần chú ý "
                "(giao trễ, chat từ chối, chat dùng câu dự phòng, chạy trùng).")
-    show_table(df.style.apply(log_row_styler([log["event_type"] for log in logs]), axis=1), max_height=520)
+    show_table(df.style.apply(log_row_styler([log["event_type"] for log in logs]), axis=1), max_height=520,
+               html_columns=(TRACE_COLUMN,))
+
+
+TRACE_COLUMN = "Chi tiết AI"
+
+
+# ---- Tab 5: Đánh giá Agent (đọc kết quả Evals, giao ước G7) -----------------------
+EVAL_GROUP_LABELS = {
+    "data": "Hỏi số liệu", "followup": "Hỏi nối tiếp", "trap": "Câu bẫy (đòi tạo/sửa PO)",
+    "injection": "Chèn lệnh", "out_of_scope": "Ngoài phạm vi", "policy": "Hỏi quy định",
+    "audit": "Rà soát buổi sáng",
+}
+# (khóa G7, nhãn, giải thích). Đúng tên khóa summary.json do YE6 ghi, không đổi.
+EVAL_METRICS = [
+    ("pass_rate", "✅ Tỉ lệ đạt", "Câu đạt mọi tiêu chí áp dụng cho nó"),
+    ("numbers_ok", "🔢 Số liệu đúng", "Câu trả lời có đủ con số mong đợi, không bịa số"),
+    ("refusal_ok", "🛡️ Từ chối đúng", "Từ chối đúng câu cần từ chối, trả lời đúng câu được phép"),
+    ("source_ok", "📄 Nguồn đúng", "Nguồn ghi ra có thật trong kết quả tìm kiếm và đúng tài liệu"),
+    ("recall_at_3", "🔍 Tìm đúng tài liệu", "Tài liệu đúng nằm trong 3 kết quả tìm kiếm đầu (câu hỏi quy định)"),
+    ("fallback_rate", "⚠️ Dùng câu dự phòng", "Tỉ lệ câu AI không trả lời được, phải dùng câu dự phòng"),
+    ("latency_ms_avg", "⏱️ Thời gian trung bình", "Thời gian trả lời trung bình một câu"),
+]
+MODE_LABELS = {"live": "Gemini thật", "fake": "Gemini giả (chạy thử)"}
+
+
+def fmt_rate(value):
+    """0.75 -> 75%; null / thiếu / không phải số -> —."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return "—"
+    return f"{value * 100:.0f}%"
+
+
+def fmt_latency(value):
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return "—"
+    return f"{value / 1000:.1f} giây" if value >= 1000 else f"{value:.0f} ms"
+
+
+def fmt_check(value):
+    return {True: "✅", False: "❌"}.get(value, "")
+
+
+def render_eval_rows(groups):
+    c1, c2 = st.columns(2)
+    group = c1.selectbox("Nhóm câu hỏi", ["__ALL__"] + groups, key="eval_group",
+                         format_func=lambda g: "Tất cả" if g == "__ALL__" else EVAL_GROUP_LABELS.get(g, g))
+    result = c2.selectbox("Kết quả", ["__ALL__", "passed", "failed"], key="eval_passed",
+                          format_func={"__ALL__": "Tất cả", "passed": "Đạt", "failed": "Trượt"}.get)
+    rows = api.get_eval_rows(group=None if group == "__ALL__" else group,
+                             passed={"passed": True, "failed": False}.get(result))
+    if not rows:
+        st.info("Không có câu nào khớp bộ lọc.")
+        return
+    table = [{
+        "Mã": r.get("id") or "", "Nhóm": EVAL_GROUP_LABELS.get(r.get("group"), r.get("group") or ""),
+        "Kết quả": "Đạt" if r.get("passed") else "Trượt",
+        "Số liệu": fmt_check(r.get("numbers_ok")), "Từ chối": fmt_check(r.get("refusal_ok")),
+        "Công cụ": fmt_check(r.get("tools_ok")), "Nguồn": fmt_check(r.get("source_ok")),
+        "Tìm đúng tài liệu": fmt_check(r.get("retrieval_hit")), "Nguyên nhân": fmt_check(r.get("main_cause_ok")),
+        "Thời gian": fmt_latency(r.get("latency_ms")),
+        "Câu trả lời": pretty_text(r.get("answer") or ""), "Ghi chú": r.get("note") or "",
+    } for r in rows]
+    show_table(styled_table(pd.DataFrame(table), ("Kết quả", "Trượt", RED_STYLE)), max_height=520)
+
+
+def render_tab5(user):
+    st.subheader("Đánh giá Agent")
+    summary = api.get_eval_summary()
+    if summary is None:
+        st.info("Chưa có kết quả đánh giá. Mở terminal ở thư mục dự án, chạy một trong hai lệnh dưới "
+                "rồi tải lại trang.")
+        st.code("python -m evals.run           # chạy thử bằng Gemini giả, không cần mạng\n"
+                "python -m evals.run --live    # chạy với Gemini thật", language="bash")
+        return
+
+    run_at = summary.get("run_at")
+    try:
+        when = fmt_dt(run_at)
+    except (TypeError, ValueError):
+        when = str(run_at or "—")
+    st.caption(" · ".join([
+        f"Lần chạy: {when}",
+        f"Chế độ: {MODE_LABELS.get(summary.get('mode'), summary.get('mode') or '—')}",
+        TOOL_MODE_LABELS.get(summary.get("agent_tools"), f"Công cụ: {summary.get('agent_tools') or '—'}"),
+        f"Tên lần chạy: {summary.get('tag') or '—'}",
+        f"Số câu: {summary.get('n') if summary.get('n') is not None else '—'}",
+    ]))
+
+    with st.container(border=True):
+        for start in (0, 4):
+            cols = st.columns(4)
+            for col, (key, label, help_text) in zip(cols, EVAL_METRICS[start:start + 4]):
+                value = summary.get(key)
+                col.metric(label, fmt_latency(value) if key == "latency_ms_avg" else fmt_rate(value),
+                           help=help_text)
+    st.caption("— = chưa có câu hỏi nào dùng để tính chỉ số này.")
+
+    by_group = summary.get("by_group") or {}
+    st.markdown("**Tỉ lệ đạt theo nhóm câu hỏi**")
+    if by_group:
+        show_table(pd.DataFrame([{"Nhóm câu hỏi": EVAL_GROUP_LABELS.get(g, g), "Tỉ lệ đạt": fmt_rate(v)}
+                                 for g, v in by_group.items()]))
+    else:
+        st.info("Chưa có số liệu theo nhóm.")
+
+    st.markdown("**Chi tiết từng câu (lần chạy gần nhất)**")
+    groups = sorted({r.get("group") for r in api.get_eval_rows() if r.get("group")})
+    render_eval_rows(groups)
 
 
 @st.cache_resource
@@ -1011,8 +1149,8 @@ def main():
     render_sidebar(user)
     st.title("🥐 Trợ lý cung ứng nguyên vật liệu - Tiệm bánh")
     render_banner()
-    tab1, tab2, tab3, tab4 = st.tabs(
-        ["📦 Kho & Đơn đặt trước", "🔎 Rà soát", "💬 Hỏi đáp tồn kho", "📜 Nhật ký hệ thống"])
+    tab1, tab2, tab3, tab4, tab5 = st.tabs(
+        ["📦 Kho & Đơn đặt trước", "🔎 Rà soát", "💬 Hỏi đáp tồn kho", "📜 Nhật ký hệ thống", "📊 Đánh giá Agent"])
     with tab1:
         render_tab1(user)
     with tab2:
@@ -1021,6 +1159,8 @@ def main():
         render_tab3(user)
     with tab4:
         render_tab4(user)
+    with tab5:
+        render_tab5(user)
 
 
 main()
