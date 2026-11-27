@@ -6,3 +6,5 @@ pydantic
 pytest
 python-dotenv
 tzdata
+# v2 – QA4
+mcp==2.3.0
