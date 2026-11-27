@@ -6,3 +6,6 @@ pydantic
 pytest
 python-dotenv
 tzdata
+
+# v2 – MA4
+langsmith>=0.3,<1
