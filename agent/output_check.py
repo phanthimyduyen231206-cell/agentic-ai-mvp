@@ -14,6 +14,9 @@ nhưng không thể chỉ tin lời dặn, nên code kiểm lại:
 - Trả danh sách con số không có trong dữ liệu (rỗng = hợp lệ). core_agent thấy danh sách khác rỗng
   thì bỏ câu của Gemini, dùng câu mẫu và ghi trace "numbers_mismatch".
 
+Số phần tử của mỗi danh sách trong dữ liệu cũng hợp lệ ("gồm 1 lô" khi tool trả 1 lô) – phát hiện khi
+chạy Gemini thật (MA3): câu đúng "Bơ lạt còn 5 kg, gồm 1 lô" từng bị chặn nhầm.
+
 Không kiểm: mã có cả chữ lẫn số (KEM-L1, PO-004, DH01) vì đó là mã định danh, không phải số liệu.
 So sánh theo giá trị tuyệt đối (-2.0 viết thành "âm 2 lít" vẫn khớp), cho phép làm tròn đúng số
 chữ số thập phân Gemini viết (0.333 → "0.33").
@@ -56,6 +59,8 @@ class _Allowed:
                 if k not in _SKIP_KEYS:
                     self.add_value(v)
         elif isinstance(value, (list, tuple, set)):
+            # Số phần tử cũng là số liệu có thật: "gồm 1 lô", "có 2 nhà cung cấp" (Gemini tự đếm danh sách)
+            self.numbers.add(float(len(value)))
             for v in value:
                 self.add_value(v)
 

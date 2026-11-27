@@ -69,3 +69,12 @@ def test_tool_results_as_source():
     assert find_unknown_numbers(good, [tool]) == []
     assert find_unknown_numbers("Còn 12 lít.", [tool]) == ["12"]
     assert find_unknown_numbers("", [tool]) == []
+
+
+def test_count_of_list_items_is_allowed():
+    """MA3 – Gemini thật viết "gồm 1 lô" (tự đếm danh sách batches) → không được coi là số bịa."""
+    tool = {"ok": True, "ingredient_id": "BO_LAT", "unit": "kg", "on_hand_qty": 5.0,
+            "batches": [{"batch_id": "BO-L1", "qty": 5.0, "expiry_date": "2026-12-20T00:00:00"}]}
+    answer = "Bơ lạt còn 5 kg, gồm 1 lô: lô BO-L1 còn 5 kg (hết hạn 2026-12-20)."
+    assert find_unknown_numbers(answer, [tool]) == []
+    assert find_unknown_numbers("Bơ lạt gồm 3 lô.", [tool]) == ["3"]  # đếm sai vẫn bị bắt
