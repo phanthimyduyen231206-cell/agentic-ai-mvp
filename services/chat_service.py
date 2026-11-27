@@ -73,6 +73,9 @@ def _summarize_trace(trace: list[dict]) -> dict:
     numbers = next((t.get("numbers") for t in trace if t.get("reason") == "numbers_mismatch"), None)
     if numbers:
         summary["numbers_mismatch"] = numbers
+    url = next((t.get("url") for t in trace if t.get("step") == "trace" and t.get("url")), None)
+    if url:  # chỉ có khi LANGSMITH_TRACING=true (giao ước G2)
+        summary["trace_url"] = url
     return summary
 
 
@@ -95,7 +98,8 @@ def ask_chat(question: str, user: Any, history: Any = None, llm: Any = None) -> 
 
     turns = clean_history(history)
     trace: list[dict] = []
-    result = run_agent("READ_ONLY_CHAT", {"question": text, "history": turns}, llm=llm, trace=trace)
+    result = run_agent("READ_ONLY_CHAT", {"question": text, "history": turns}, llm=llm, trace=trace,
+                       meta={"user": _actor(user)})
     summary = _summarize_trace(trace)
     answer = {
         "answer": str(result.get("answer", "")),

@@ -239,19 +239,31 @@ def _supersede_old_alerts(run_id: int, now: str, conn) -> list[int]:
     return closed
 
 
+def _trace_url(trace: list[dict]) -> str | None:
+    """Link cây trace LangSmith (giao ước G2) – chỉ có khi LANGSMITH_TRACING=true."""
+    return next((t.get("url") for t in trace if t.get("step") == "trace" and t.get("url")), None)
+
+
 def _summarize_trace(trace: list[dict]) -> dict:
-    return {
+    summary = {
         "tools_called": [t["tool_name"] for t in trace if t.get("step") == "tool_call"],
         "tools_blocked": [t["tool_name"] for t in trace if t.get("step") == "tool_blocked"],
         "fallback": sorted({t.get("reason") for t in trace if t.get("step") == "fallback"}),
     }
+    url = _trace_url(trace)
+    if url:  # tracing tắt thì không có khóa trace_url (G2)
+        summary["trace_url"] = url
+    return summary
 
 
-def _fail(run_id: int, actor: str, error: str) -> None:
+def _fail(run_id: int, actor: str, error: str, trace_url: str | None = None) -> None:
+    detail = {"error": error[:500]}
+    if trace_url:
+        detail["trace_url"] = trace_url
     try:
         repo.update_audit_run(run_id, {"status": "FAILED", "finished_at": _ts(clock.now()), "error": error[:500]})
         write_audit_log(actor, "RUN_FAILED", entity_type="audit_run", entity_id=run_id, run_id=run_id,
-                        detail={"error": error[:500]})
+                        detail=detail)
     except Exception:  # noqa: BLE001
         logger.exception("Không ghi được trạng thái FAILED cho phiên %s", run_id)
 
@@ -271,6 +283,7 @@ def run_morning_audit(trigger: Literal["SCHEDULED", "MANUAL"], rerun: bool = Fal
     if "status" in started:
         return started
     run_id = started["run_id"]
+    trace: list[dict] = []
 
     try:
         mark_delayed_pos(run_id, actor)
@@ -292,15 +305,14 @@ def run_morning_audit(trigger: Literal["SCHEDULED", "MANUAL"], rerun: bool = Fal
             if not draft.get("snapshot_hash"):
                 draft["snapshot_hash"] = repo.compute_snapshot_hash(draft["ingredient_id"])
 
-        trace: list[dict] = []
         explained = run_agent("MORNING_AUDIT", {"run_date": today.isoformat(), "alerts": drafts},
-                              llm=llm, trace=trace)
+                              llm=llm, trace=trace, meta={"user": actor, "run_id": run_id, "trigger": trigger})
         by_id = {e["ingredient_id"]: e for e in explained.get("alerts", [])}
         ids = _save_alerts(run_id, drafts, by_id, actor, _summarize_trace(trace))
         return _result(run_id, "SUCCEEDED", ids, f"Rà soát xong: {len(ids)} cảnh báo.")
     except Exception as exc:  # noqa: BLE001 – không để lỗi làm treo phiên RUNNING
         logger.exception("Rà soát %s thất bại", run_id)
-        _fail(run_id, actor, f"{type(exc).__name__}: {exc}")
+        _fail(run_id, actor, f"{type(exc).__name__}: {exc}", _trace_url(trace))
         return _result(run_id, "FAILED", [], "Rà soát thất bại, xem chi tiết ở Tab Nhật ký.")
 
 

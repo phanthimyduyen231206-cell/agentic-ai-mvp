@@ -167,7 +167,7 @@ def test_e_tool_call_then_answer() -> None:
     assert calls == [("check_inventory_fefo", {"ingredient_id": "KEM_TUOI", "days": 3})]
     assert llm.call_count == 2
     assert llm.calls[1]["tool_results"][0]["tool_name"] == "check_inventory_fefo"
-    assert [t["step"] for t in trace] == ["tool_call"]
+    assert [t["step"] for t in trace if t["step"] != "llm_call"] == ["tool_call"]  # llm_call: G2 (MA4)
 
 
 # (f) ----------------------------------------------------------------------

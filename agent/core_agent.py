@@ -16,6 +16,10 @@ Chủ file: Mai Anh (M03). Chữ ký hàm: xem docs/contracts.md mục 7.
 - Vòng tool (MA2): chạy đủ mọi function_call của một lượt (gọi song song), gửi kết quả lại bằng
   function_response; hết 6 vòng thì gọi thêm 1 lượt không có tool để Gemini tổng hợp câu trả lời.
 - Gemini lỗi, quá giờ, lượt tổng hợp vẫn đòi tool, hoặc JSON sai → trả câu mẫu do code sinh, KHÔNG raise.
+- Observability (v2 – MA4, giao ước G2): list trace luôn có {"step": "llm_call", model, tokens_in, tokens_out,
+  latency_ms} cho mỗi lần gọi Gemini và {"step": "tool_call", tool_name, arguments, ok, via} cho mỗi tool
+  (search_policy thêm docs, retriever), kể cả khi tắt LangSmith. LANGSMITH_TRACING=true → thêm cây trace
+  trên LangSmith (agent/tracing.py) và bước {"step": "trace", "url"}.
 - Hậu kiểm số liệu (agent/output_check.py): câu Gemini có con số không nằm trong dữ liệu đầu vào
   (AlertDraft khi rà soát, kết quả tool khi chat) → bỏ câu đó, dùng câu mẫu, trace "numbers_mismatch".
 - Đầu ra MORNING_AUDIT có thêm cờ "ai_fallback" cho từng cảnh báo: True = câu mẫu do code sinh
@@ -35,6 +39,7 @@ from typing import Any, Callable, Literal
 
 from pydantic import BaseModel, Field, ValidationError, field_validator
 
+from agent import tracing
 from agent.output_check import find_unknown_numbers
 from agent.prompts import (
     CURRENT_QUESTION_HEADER,
@@ -302,10 +307,13 @@ class GeminiLLM:
             contents[-1].parts.append(t.Part(text=FINAL_ROUND_NOTE))
         return contents
 
+    @tracing.traced(name="Gemini", run_type="llm")
     def generate(self, mode: str, system_prompt: str, user_message: str,
                  available_tools: list[str] | None = None,
                  tool_results: list[dict[str, Any]] | None = None) -> dict[str, Any]:
         from google.genai import errors
+
+        tracing.add_metadata(ls_provider="google_genai", ls_model_name=self.model, ls_temperature=0)
 
         t = self._types
         names = list(available_tools or [])
@@ -334,17 +342,33 @@ class GeminiLLM:
                 if exc.code not in self.RETRY_CODES or attempt == self.retries:
                     raise
                 time.sleep(5 * (attempt + 1))
+        usage = _usage_metadata(resp)
         calls = getattr(resp, "function_calls", None) or []
         if calls:
             candidates = getattr(resp, "candidates", None) or []
             return {
                 "type": "tool_call",
+                "usage_metadata": usage,
                 # Đủ mọi function_call của lượt này (Gemini có thể gọi song song nhiều tool)
                 "calls": [{"tool_name": c.name, "arguments": dict(c.args or {}), "call_id": getattr(c, "id", None)}
                           for c in calls],
                 "_model_content": candidates[0].content if candidates else None,
             }
-        return {"type": "text", "text": resp.text or ""}
+        return {"type": "text", "text": resp.text or "", "usage_metadata": usage}
+
+
+def _usage_metadata(resp: Any) -> dict | None:
+    """Số token từ resp.usage_metadata của Gemini, theo tên khóa LangSmith đọc được để tính chi phí."""
+    meta = getattr(resp, "usage_metadata", None)
+    if meta is None:
+        return None
+    tokens_in = getattr(meta, "prompt_token_count", None)
+    tokens_out = getattr(meta, "candidates_token_count", None)
+    total = getattr(meta, "total_token_count", None)
+    if tokens_in is None and tokens_out is None:
+        return None
+    return {"input_tokens": tokens_in, "output_tokens": tokens_out,
+            "total_tokens": total if total is not None else (tokens_in or 0) + (tokens_out or 0)}
 
 
 def _as_response(result: Any) -> dict:
@@ -414,7 +438,9 @@ def _log(trace: list | None, step: str, **detail: Any) -> None:
         trace.append({"step": step, **detail})
 
 
-def _run_tool(tools: dict[str, Callable[..., Any]], name: str, args: dict, trace: list | None) -> dict:
+@tracing.traced(run_type="tool", name_from="name")
+def _run_tool(tools: dict[str, Callable[..., Any]], name: str, args: dict, trace: list | None,
+              via: str = "local") -> dict:
     if name not in tools:
         _log(trace, "tool_blocked", tool_name=name, arguments=args)
         return {"tool_name": name, "arguments": args,
@@ -424,7 +450,13 @@ def _run_tool(tools: dict[str, Callable[..., Any]], name: str, args: dict, trace
         result = tools[name](**args)
     except Exception as exc:  # noqa: BLE001 – lỗi tool trả về cho LLM như dữ liệu
         result = {"ok": False, "error_code": "TOOL_ERROR", "message": str(exc)}
-    _log(trace, "tool_call", tool_name=name, arguments=args)
+    step = {"tool_name": name, "arguments": args,
+            "ok": bool(result.get("ok", True)) if isinstance(result, dict) else True, "via": via}
+    if isinstance(result, dict) and "retriever" in result:  # search_policy (G2, G4)
+        step["docs"] = [r.get("doc") for r in result.get("results") or [] if isinstance(r, dict)]
+        step["retriever"] = result.get("retriever")
+        tracing.add_metadata(retriever=result.get("retriever"), docs=step["docs"])
+    _log(trace, "tool_call", **step)
     return {"tool_name": name, "arguments": args, "result": result}
 
 
@@ -442,6 +474,27 @@ def _calls_of(resp: dict) -> list[dict]:
     return out
 
 
+def _model_name(llm: Any) -> str:
+    return str(getattr(llm, "model", None) or type(llm).__name__)
+
+
+def _call_llm(llm: Any, trace: list | None, **kwargs) -> dict:
+    """Gọi llm.generate một lần, luôn ghi bước llm_call (G2) kể cả khi lỗi; lỗi thì raise lại."""
+    start = time.perf_counter()
+    try:
+        resp = llm.generate(**kwargs)
+    except Exception:
+        _log(trace, "llm_call", model=_model_name(llm), tokens_in=None, tokens_out=None,
+             latency_ms=int(round((time.perf_counter() - start) * 1000)), ok=False)
+        raise
+    usage = resp.get("usage_metadata") if isinstance(resp, dict) else None
+    _log(trace, "llm_call", model=_model_name(llm),
+         tokens_in=(usage or {}).get("input_tokens"), tokens_out=(usage or {}).get("output_tokens"),
+         latency_ms=int(round((time.perf_counter() - start) * 1000)), ok=True)
+    return resp
+
+
+@tracing.traced(name="agent_loop")
 def _ask_llm(llm: Any, mode: str, user_message: str, tools: dict, trace: list | None,
              tool_results: list[dict] | None = None) -> str | None:
     """Vòng hỏi Gemini ↔ chạy tool. Trả văn bản cuối, hoặc None nếu lỗi.
@@ -460,8 +513,8 @@ def _ask_llm(llm: Any, mode: str, user_message: str, tools: dict, trace: list | 
     while True:
         final = rounds >= MAX_TOOL_ROUNDS
         try:
-            resp = llm.generate(mode=mode, system_prompt=system_prompt, user_message=user_message,
-                                available_tools=[] if final else available, tool_results=tool_results)
+            resp = _call_llm(llm, trace, mode=mode, system_prompt=system_prompt, user_message=user_message,
+                             available_tools=[] if final else available, tool_results=tool_results)
         except Exception as exc:  # noqa: BLE001 – mất mạng, 503, timeout… → câu dự phòng
             _log(trace, "llm_error", error=f"{type(exc).__name__}: {exc}"[:300])
             return None
@@ -575,11 +628,19 @@ def _chat(payload: dict, llm: Any, tools: dict, trace: list | None) -> dict:
     return out
 
 
+@tracing.traced(run_type="chain", name_from="mode")
 def run_agent(mode: Mode, payload: dict, llm: Any = None,
-              tools: Any = None, trace: list | None = None) -> dict:
-    """Điểm vào duy nhất của agent (contracts mục 7). Không ghi dữ liệu, không raise khi Gemini lỗi."""
+              tools: Any = None, trace: list | None = None, meta: dict | None = None) -> dict:
+    """Điểm vào duy nhất của agent (contracts mục 7). Không ghi dữ liệu, không raise khi Gemini lỗi.
+
+    `meta` (tùy chọn, v2 – MA4): thông tin gắn vào cây trace LangSmith, vd {"user": "quanly", "run_id": 12}.
+    Không ảnh hưởng kết quả trả về.
+    """
     if mode not in TOOLS_BY_MODE:
         raise ValueError(f"mode không hợp lệ: {mode}. Chỉ nhận MORNING_AUDIT hoặc READ_ONLY_CHAT")
+    if trace is None and tracing.enabled():
+        trace = []  # cần list để tổng hợp metadata cho trace
+    tracing.add_metadata(mode=mode, **(meta or {}))
     tool_map = _normalize_tools(tools) if tools is not None else load_default_tools()
 
     if llm is None:
@@ -589,9 +650,34 @@ def run_agent(mode: Mode, payload: dict, llm: Any = None,
             _log(trace, "llm_error", error=f"{type(exc).__name__}: {exc}"[:300])
             _log(trace, "fallback", reason="llm_unavailable")
             if mode == "MORNING_AUDIT":
-                return _morning_fallback(list(payload.get("alerts") or []))
-            return {"answer": CHAT_FALLBACK_ANSWER, "refused": False}
+                result = _morning_fallback(list(payload.get("alerts") or []))
+            else:
+                result = {"answer": CHAT_FALLBACK_ANSWER, "refused": False}
+            _finish_trace(mode, result, trace)
+            return result
 
+    result = _morning(payload, llm, tool_map, trace) if mode == "MORNING_AUDIT" else _chat(payload, llm, tool_map, trace)
+    _finish_trace(mode, result, trace)
+    return result
+
+
+def _finish_trace(mode: str, result: dict, trace: list | None) -> None:
+    """Gắn kết quả tóm tắt vào nút gốc LangSmith và thêm bước {"step": "trace", "url"} (chỉ khi bật tracing)."""
+    if not tracing.enabled():
+        return
+    steps = trace or []
+    reasons = [t.get("reason") for t in steps if t.get("step") == "fallback"]
+    numbers = [n for t in steps if t.get("reason") == "numbers_mismatch" for n in t.get("numbers") or []]
     if mode == "MORNING_AUDIT":
-        return _morning(payload, llm, tool_map, trace)
-    return _chat(payload, llm, tool_map, trace)
+        flags = [bool(a.get("ai_fallback")) for a in result.get("alerts") or []]
+        ai_fallback = any(flags)
+        tracing.add_metadata(alerts=len(flags), alerts_fallback=sum(flags))
+    else:
+        ai_fallback = bool(reasons)
+        tracing.add_metadata(refused=bool(result.get("refused")))
+    tracing.add_metadata(ai_fallback=ai_fallback, fallback_reasons=reasons or None, numbers_mismatch=numbers or None,
+                         tokens_in=sum(t.get("tokens_in") or 0 for t in steps if t.get("step") == "llm_call"),
+                         tokens_out=sum(t.get("tokens_out") or 0 for t in steps if t.get("step") == "llm_call"))
+    url = tracing.run_url()
+    if url:
+        _log(trace, "trace", url=url)
